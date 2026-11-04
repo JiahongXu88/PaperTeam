@@ -121,7 +121,7 @@ describe("prepare / finalize：受控定点修订（锚外逐字保持；判断�
     const prepared = prepareStyleRevisions({ findings: [finding({})], attempted: new Set(), maxAutoRewrites: 5, resolveTarget: () => target });
     expect(prepared.candidates).toHaveLength(1);
     const items = styleRewriteCheckItems(prepared.candidates);
-    const result = finalizeStyleRevisions({ projectId: "p", runId: "r", candidates: prepared.candidates, verdicts: new Map([[items[0]!.id, { verdict: "EQUIVALENT", reason: "只删样板" }]]) });
+    const result = finalizeStyleRevisions({ projectId: "p", runId: "r", candidates: prepared.candidates, verdicts: new Map([[items[0]!.id, { verdict: "EQUIVALENT", fluency: "FLUENT", reason: "只删样板" }]]) });
     expect(result.items[0]!.status).toBe("AUTO_FIXED");
     expect(result.writes[0]!.after).toBe(content.replace(APOLOGY, ""));
     expect(result.writes[0]!.after).toContain(LIMIT);

@@ -1251,7 +1251,7 @@ export function createScriptedRuntime(options: ScriptedRuntimeOptions = {}): Scr
         output = JSON.stringify({ styleFindings, unitNote: "scripted style audit" });
       } else if (scope === "review/style/rewrite-check") {
         const ids = [...input.task.matchAll(/--- 条目 (sty-[0-9a-f]+)/g)].map((match) => match[1]);
-        output = JSON.stringify({ checks: ids.map((id) => ({ id, verdict: "EQUIVALENT", reason: "scripted" })) });
+        output = JSON.stringify({ checks: ids.map((id) => ({ id, verdict: "EQUIVALENT", fluency: "FLUENT", reason: "scripted" })) });
       } else if (scope.startsWith("review/")) {
         // 轮次计数按项目隔离（E2E 单栈多项目互不串台；无 projectId 时退回全局计数）
         if (projectId !== "") {

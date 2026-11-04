@@ -59,7 +59,7 @@ import {
   type ParsedUnitStyleAudit,
   type StyleCandidate,
   type StyleRewriteCheckItem,
-  type StyleSemanticVerdict,
+  type StyleSemanticResult,
 } from "../review/academicStyleAudit.js";
 
 export type ReviewMode = "fact" | "academic" | "style";
@@ -770,7 +770,7 @@ export class ReviewerService {
     items: readonly StyleRewriteCheckItem[];
     sessionLabel: string;
     signal?: AbortSignal;
-  }): Promise<{ verdicts: Map<string, { verdict: StyleSemanticVerdict; reason: string }>; taskId: string; promptSha256: string; model?: string; usage?: Record<string, unknown> }> {
+  }): Promise<{ verdicts: Map<string, StyleSemanticResult>; taskId: string; promptSha256: string; model?: string; usage?: Record<string, unknown> }> {
     const prompt = buildStyleRewriteCheckPrompt(params.items);
     const task = await this.runtime.runAgent({
       agentId: this.agentId,

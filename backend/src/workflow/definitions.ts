@@ -342,7 +342,7 @@ import {
   type StyleAuditReport,
   type StyleAuditSummary,
   type StyleRevisionRecord,
-  type StyleSemanticVerdict,
+  type StyleSemanticResult,
 } from "../review/academicStyleAudit.js";
 import { runAcademicStyleAudit, type StyleAuditUnitInput } from "../review/academicStyleAuditRunner.js";
 import { finalizeStyleRevisions, prepareStyleRevisions, styleRewriteCheckItems, type StyleRevisionTarget } from "../review/academicStyleRevision.js";
@@ -5613,6 +5613,8 @@ function styleAuditApplyStage(services: WorkflowServices): StageSpec {
         findings: report.findings,
         attempted,
         maxAutoRewrites,
+        // M17.1.1：术语一致性按全稿正文判断（含摘要载体）
+        corpus: [outline?.abstract ?? "", ...files.allTex.map((file) => file.content)].join("\n\n"),
         resolveTarget: (finding): StyleRevisionTarget | { error: string } => {
           const file = finding.file.replaceAll("\\", "/");
           if (outline !== null && file === "main.tex") {
@@ -5626,7 +5628,7 @@ function styleAuditApplyStage(services: WorkflowServices): StageSpec {
           return content === undefined ? { error: `目标文件 ${file} 不存在` } : { target: file, carrier: "file", content };
         },
       });
-      let verdicts: Map<string, { verdict: StyleSemanticVerdict; reason: string }> | null = null;
+      let verdicts: Map<string, StyleSemanticResult> | null = null;
       let unavailable: string | undefined;
       if (prepared.candidates.length > 0) {
         const checkItems = styleRewriteCheckItems(prepared.candidates);

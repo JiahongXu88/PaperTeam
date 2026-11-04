@@ -7,7 +7,8 @@
  *   3. 锚内确定性守卫（checkStyleRewrite）再次通过；
  *   4. EditContract（academic_style_rewrite：锚内替换 / 删除，数值与引用硬冻结）对**整份目标**校验通过（锚外逐字保留）；
  *   5. 整份目标的论断强度升级 / 结论翻转检测无新增；
- *   6. 只可否决的语义复核判 EQUIVALENT（UNSURE / CHANGED / 调用失败 = 保持原文，交作者）。
+ *   6. 拼接检查（M17.1.1）：删改后与锚外文字的标点衔接、被替换词是否为全稿术语、改写是否与同句锚外重复；
+ *   7. 只可否决的语义复核判 EQUIVALENT 且改后整句 FLUENT（任一为 UNSURE / CHANGED / AWKWARD / 缺失 / 调用失败 = 保持原文，交作者）。
  * 同一目标的多处补丁按位置合并后整体再校验一次（契约 + 强度 + 翻转），任一失败则该目标全部补丁不落盘。
  */
 
@@ -16,11 +17,13 @@ import { academicStyleRewriteContract, describeEditContractVerdict, validateCand
 import { detectClauseConclusionFlips } from "../quality/factPreservation.js";
 import {
   checkStyleRewrite,
+  checkStyleSplice,
   locateStyleQuote,
+  sentenceBounds,
   type StyleFinding,
   type StyleRevisionItem,
   type StyleRewriteCheckItem,
-  type StyleSemanticVerdict,
+  type StyleSemanticResult,
 } from "./academicStyleAudit.js";
 
 export interface StyleRevisionTarget {
@@ -40,6 +43,9 @@ export interface StyleRevisionCandidate {
   rewrite: string;
   /** 语义复核上下文（原句所在段落，≤ 400 字） */
   context: string;
+  /** M17.1.1：原句所在完整句子（改前）与拼接后的完整句子（改后） */
+  sentenceBefore: string;
+  sentenceAfter: string;
 }
 
 export interface PrepareStyleRevisionInput {
@@ -48,6 +54,8 @@ export interface PrepareStyleRevisionInput {
   attempted: ReadonlySet<string>;
   maxAutoRewrites: number;
   resolveTarget: (finding: StyleFinding) => StyleRevisionTarget | { error: string };
+  /** M17.1.1：全稿正文（术语一致性检查；缺省 = 目标本身） */
+  corpus?: string;
 }
 
 export interface PreparedStyleRevision {
@@ -103,6 +111,11 @@ export function prepareStyleRevisions(input: PrepareStyleRevisionInput): Prepare
       settled.push(itemOf(finding, "GUARD_REJECTED", `锚内守卫未通过：${guard.violations.map((violation) => violation.detail).join("；")}`, { guard }));
       continue;
     }
+    const splice = checkStyleSplice({ content: resolved.content, start: location.start, end: location.end, rewrite: finding.proposedRewrite, ...(input.corpus !== undefined ? { corpus: input.corpus } : {}) });
+    if (splice.length > 0) {
+      settled.push(itemOf(finding, "GUARD_REJECTED", `拼接检查未通过（保持原文，交作者）：${splice.map((violation) => violation.detail).join("；")}`, { guard: { ok: false, violations: [...guard.violations, ...splice] } }));
+      continue;
+    }
     const after = `${resolved.content.slice(0, location.start)}${finding.proposedRewrite}${resolved.content.slice(location.end)}`;
     const verdict = validateCandidateEdit({
       target: resolved.target,
@@ -114,9 +127,13 @@ export function prepareStyleRevisions(input: PrepareStyleRevisionInput): Prepare
       settled.push(itemOf(finding, "GUARD_REJECTED", `编辑契约拒绝：${describeEditContractVerdict(verdict)}`, { guard, editContract: { ok: false, detail: describeEditContractVerdict(verdict) } }));
       continue;
     }
+    const bounds = sentenceBounds(resolved.content, location.start, location.end);
+    const flat = (text: string): string => text.replace(/\s+/g, " ").trim();
     candidates.push({
       finding, target: resolved, start: location.start, end: location.end, matched, rewrite: finding.proposedRewrite,
       context: paragraphContext(resolved.content, location.start, location.end),
+      sentenceBefore: flat(resolved.content.slice(bounds.start, bounds.end)),
+      sentenceAfter: flat(`${resolved.content.slice(bounds.start, location.start)}${finding.proposedRewrite}${resolved.content.slice(location.end, bounds.end)}`),
     });
   }
   return { candidates, settled };
@@ -129,6 +146,8 @@ export function styleRewriteCheckItems(candidates: readonly StyleRevisionCandida
     original: candidate.matched.replace(/\s+/g, " ").trim(),
     rewrite: candidate.rewrite,
     context: candidate.context,
+    sentenceBefore: candidate.sentenceBefore,
+    sentenceAfter: candidate.sentenceAfter,
   }));
 }
 
@@ -146,7 +165,7 @@ export function finalizeStyleRevisions(input: {
   projectId: string;
   runId: string;
   candidates: readonly StyleRevisionCandidate[];
-  verdicts: ReadonlyMap<string, { verdict: StyleSemanticVerdict; reason: string }> | null;
+  verdicts: ReadonlyMap<string, StyleSemanticResult> | null;
   semanticUnavailableReason?: string;
 }): { writes: StyleRevisionWrite[]; items: StyleRevisionItem[] } {
   const items: StyleRevisionItem[] = [];
@@ -163,6 +182,14 @@ export function finalizeStyleRevisions(input: {
     if (verdict.verdict !== "EQUIVALENT") {
       items.push(itemOf(candidate.finding, verdict.verdict === "CHANGED" ? "SEMANTIC_REJECTED" : "AUTHOR_DECISION",
         verdict.verdict === "CHANGED" ? `语义复核判定改写改变了科学命题：${verdict.reason}——保持原文` : `语义复核无法确定等价：${verdict.reason}——保持原文、交作者决定`,
+        { guard, semantic: verdict }));
+      continue;
+    }
+    if (verdict.fluency !== "FLUENT") {
+      items.push(itemOf(candidate.finding, "AUTHOR_DECISION",
+        verdict.fluency === "AWKWARD"
+          ? `语义复核判定改后整句不通顺或与上下文不一致：${verdict.reason}——保持原文、交作者决定`
+          : `语义复核未确认改后整句通顺（fluency=${verdict.fluency ?? "缺失"}）：${verdict.reason}——保持原文、交作者决定`,
         { guard, semantic: verdict }));
       continue;
     }

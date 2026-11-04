@@ -143,7 +143,13 @@ export interface StyleRewriteViolation {
     | "hedge_removed"
     | "expanded"
     | "sentence_added"
-    | "deletion_not_allowed";
+    | "deletion_not_allowed"
+    /** M17.1.1 拼接检查：替换 / 删除后与锚外文字的衔接 */
+    | "dangling_punctuation"
+    | "double_punctuation"
+    | "terminal_punctuation_lost"
+    | "term_replaced"
+    | "duplicate_in_sentence";
   detail: string;
 }
 
@@ -657,6 +663,193 @@ export function checkStyleRewrite(before: string, after: string, category: Style
 }
 
 // ---------------------------------------------------------------------------
+// M17.1.1 拼接检查（锚外衔接；确定性、fail-closed）
+//
+// 锚内守卫只比较原句与改写；B2 真实运行暴露的三类问题都发生在拼接边界之外：
+//   - 删去以句号结尾的分句后，前面的逗号成了句末（标点衔接）；
+//   - 改写替换掉的词在全文其他位置作为术语反复出现（术语一致性）；
+//   - 改写补出的成分在同一句的锚外已经存在（同句重复）。
+// 这里只做能确定判定的检查；通顺度等语言判断交给语义复核（只可否决）。
+// ---------------------------------------------------------------------------
+
+const CLAUSE_PUNCT = new Set(["，", "、", "；", "：", "。", "！", "？", ",", ";", ":"]);
+const MID_SENTENCE_PUNCT = new Set(["，", "、", "；", "：", ",", ";", ":"]);
+const TERMINATORS = /[。！？!?]/;
+/** 剥离首尾的虚词 / 标点后再判断是否为实词片段 */
+const FUNCTION_CHARS = /^[的地得了着过是在和与及其也就都而并对把被将从向于以为由这那该此其一个，、；：。！？,.;:\s（）()“”‘’「」]+|[的地得了着过是在和与及其也就都而并对把被将从向于以为由这那该此其一个，、；：。！？,.;:\s（）()“”‘’「」]+$/g;
+/** 风格修订中本来就应被删除 / 替换的词，不作为术语处理 */
+const STYLE_REMOVABLE: readonly string[] = ["如实", "坦率", "诚然", "确实", "非常", "十分", "相关", "进行", "一定", "某种", "有些", "一些"];
+
+function coreOf(text: string): string {
+  return styleProse(text).replace(FUNCTION_CHARS, "").trim();
+}
+
+function isRemovableStyleWording(text: string): boolean {
+  let rest = coreOf(text);
+  for (const term of [...HEDGE_TERMS, ...STYLE_REMOVABLE].sort((a, b) => b.length - a.length)) rest = rest.split(term).join("");
+  for (const pattern of BOILERPLATE_PATTERNS) rest = rest.replace(new RegExp(pattern.source, "g"), "");
+  return rest.replace(FUNCTION_CHARS, "").trim().length < 2;
+}
+
+/**
+ * 字符级 LCS 差分 → 改动块。间隔不超过 maxGap 个相同字符的相邻改动合并为一块（「机制自伤」→「改进本身反而损害机制」
+ * 在字符层面是「插入一段 + 删除『自伤』」，合并后才是一次替换）。removed / inserted 都非空 = 替换。
+ */
+export function diffRuns(before: string, after: string, maxGap = 2): Array<{ removed: string; inserted: string }> {
+  const a = [...before];
+  const b = [...after];
+  const n = a.length;
+  const m = b.length;
+  const dp: number[][] = Array.from({ length: n + 1 }, () => new Array<number>(m + 1).fill(0));
+  for (let i = n - 1; i >= 0; i -= 1) {
+    for (let j = m - 1; j >= 0; j -= 1) dp[i]![j] = a[i] === b[j] ? dp[i + 1]![j + 1]! + 1 : Math.max(dp[i + 1]![j]!, dp[i]![j + 1]!);
+  }
+  // 原子操作序列：= 相同，- 删除，+ 插入
+  const ops: Array<{ op: "=" | "-" | "+"; ch: string }> = [];
+  let i = 0;
+  let j = 0;
+  while (i < n || j < m) {
+    if (i < n && j < m && a[i] === b[j]) {
+      ops.push({ op: "=", ch: a[i]! });
+      i += 1;
+      j += 1;
+    } else if (j < m && (i >= n || dp[i]![j + 1]! >= dp[i + 1]![j]!)) {
+      ops.push({ op: "+", ch: b[j]! });
+      j += 1;
+    } else {
+      ops.push({ op: "-", ch: a[i]! });
+      i += 1;
+    }
+  }
+  const runs: Array<{ removed: string; inserted: string }> = [];
+  let k = 0;
+  while (k < ops.length) {
+    if (ops[k]!.op === "=") {
+      k += 1;
+      continue;
+    }
+    let removed = "";
+    let inserted = "";
+    let end = k;
+    // 吸收后续改动：中间相同字符不超过 maxGap 时并入同一块（相同字符同时计入两侧）
+    for (;;) {
+      while (end < ops.length && ops[end]!.op !== "=") {
+        if (ops[end]!.op === "-") removed += ops[end]!.ch;
+        else inserted += ops[end]!.ch;
+        end += 1;
+      }
+      let gap = end;
+      while (gap < ops.length && ops[gap]!.op === "=") gap += 1;
+      if (gap < ops.length && gap - end <= maxGap) {
+        const shared = ops.slice(end, gap).map((op) => op.ch).join("");
+        removed += shared;
+        inserted += shared;
+        end = gap;
+        continue;
+      }
+      break;
+    }
+    runs.push({ removed, inserted });
+    k = end;
+  }
+  return runs;
+}
+
+function countOccurrences(text: string, needle: string): number {
+  if (needle === "") return 0;
+  let count = 0;
+  let index = text.indexOf(needle);
+  while (index !== -1) {
+    count += 1;
+    index = text.indexOf(needle, index + needle.length);
+  }
+  return count;
+}
+
+const prevVisible = (text: string, index: number): string => {
+  for (let k = index - 1; k >= 0; k -= 1) if (!/\s/.test(text[k]!)) return text[k]!;
+  return "";
+};
+const nextVisible = (text: string, index: number): string => {
+  for (let k = index; k < text.length; k += 1) if (!/\s/.test(text[k]!)) return text[k]!;
+  return "";
+};
+
+/** 包含 [start, end) 的句子边界（以句末标点或空行为界） */
+export function sentenceBounds(text: string, start: number, end: number): { start: number; end: number } {
+  let s = start;
+  while (s > 0 && !TERMINATORS.test(text[s - 1]!) && text.slice(s - 2, s) !== "\n\n") s -= 1;
+  let e = end;
+  while (e < text.length && !TERMINATORS.test(text[e - 1] ?? "") && text.slice(e, e + 2) !== "\n\n") e += 1;
+  return { start: s, end: Math.min(e, text.length) };
+}
+
+export interface StyleSpliceInput {
+  /** 目标全文（锚点所在文件 / 摘要 / 单元） */
+  content: string;
+  start: number;
+  end: number;
+  rewrite: string;
+  /** 全稿正文（用于术语一致性；缺省 = content） */
+  corpus?: string;
+}
+
+/** 拼接检查：只返回违规（空数组 = 通过）；不证明通顺，只阻断可确定的衔接 / 术语 / 重复问题 */
+export function checkStyleSplice(input: StyleSpliceInput): StyleRewriteViolation[] {
+  const { content, start, end, rewrite } = input;
+  const original = content.slice(start, end);
+  const violations: StyleRewriteViolation[] = [];
+  const prev = prevVisible(content, start);
+  const next = nextVisible(content, end);
+  const trimmedRewrite = rewrite.trim();
+  const removedTerminator = TERMINATORS.test(original.trim().slice(-1));
+  const rewriteTerminator = trimmedRewrite !== "" && TERMINATORS.test(trimmedRewrite.slice(-1));
+  if (removedTerminator && !rewriteTerminator && !TERMINATORS.test(next)) {
+    // 只有前文停在分句标点上才是残缺句；段首 / 标题命令（如 \section{…}）之后整句删除是正常的
+    if (trimmedRewrite === "" && MID_SENTENCE_PUNCT.has(prev)) {
+      violations.push({ rule: "dangling_punctuation", detail: `删除以句末标点结尾的片段后，前文以「${prev}」收尾、句子未收束` });
+    } else if (trimmedRewrite !== "") {
+      violations.push({ rule: "terminal_punctuation_lost", detail: "原句的句末标点在改写中丢失" });
+    }
+  }
+  const left = trimmedRewrite === "" ? prev : [...trimmedRewrite][0]!;
+  const leftOuter = trimmedRewrite === "" ? prev : prev;
+  const right = trimmedRewrite === "" ? next : [...trimmedRewrite].slice(-1)[0]!;
+  if (trimmedRewrite === "") {
+    if (CLAUSE_PUNCT.has(prev) && CLAUSE_PUNCT.has(next)) violations.push({ rule: "double_punctuation", detail: `删除后出现相邻标点「${prev}${next}」` });
+  } else {
+    if (CLAUSE_PUNCT.has(leftOuter) && CLAUSE_PUNCT.has(left)) violations.push({ rule: "double_punctuation", detail: `改写开头与前文形成相邻标点「${leftOuter}${left}」` });
+    if (CLAUSE_PUNCT.has(right) && CLAUSE_PUNCT.has(next)) violations.push({ rule: "double_punctuation", detail: `改写结尾与后文形成相邻标点「${right}${next}」` });
+  }
+
+  const corpus = input.corpus ?? content;
+  const sentence = sentenceBounds(content, start, end);
+  const outsideSentence = styleProse(content.slice(sentence.start, start) + "\u0000" + content.slice(end, sentence.end));
+  for (const run of diffRuns(original, rewrite)) {
+    const removedCore = coreOf(run.removed);
+    if (run.removed !== "" && run.inserted !== "" && removedCore.length >= 2 && !isRemovableStyleWording(run.removed)) {
+      const elsewhere = countOccurrences(styleProse(corpus), removedCore) - countOccurrences(styleProse(original), removedCore);
+      if (elsewhere > 0) {
+        violations.push({ rule: "term_replaced", detail: `被替换的「${removedCore}」在全稿其他位置出现 ${elsewhere} 次，可能是术语；改写会造成说法不一致` });
+      }
+    }
+    // 同句重复：改写新增成分中任一 4 字片段（原句中没有、同一句锚外已有）
+    const insertedCore = coreOf(run.inserted);
+    const chars = [...insertedCore];
+    const originalProse = styleProse(original);
+    for (let w = 0; w + 4 <= chars.length; w += 1) {
+      const window = chars.slice(w, w + 4).join("");
+      if (/\s/.test(window) || originalProse.includes(window)) continue;
+      if (outsideSentence.includes(window)) {
+        violations.push({ rule: "duplicate_in_sentence", detail: `改写新增的「${window}」在同一句锚外已经出现` });
+        break;
+      }
+    }
+  }
+  return violations;
+}
+
+// ---------------------------------------------------------------------------
 // 机器分级
 // ---------------------------------------------------------------------------
 
@@ -701,6 +894,9 @@ export function classifyStyleFinding(
     reason = "原句在单元中出现多次：锚点不唯一，不自动改写";
   } else {
     precheck = checkStyleRewrite(raw.quote, raw.rewrite, raw.styleCategory);
+    const located = locateStyleQuote(context.unitText, raw.quote);
+    const splice = checkStyleSplice({ content: context.unitText, start: located.start, end: located.end, rewrite: raw.rewrite });
+    if (splice.length > 0) precheck = { ok: false, violations: [...precheck.violations, ...splice] };
     if (precheck.ok) {
       disposition = "AUTO_REWRITE_ELIGIBLE";
       reason = "纯措辞问题，改写通过锚内确定性预检；落盘前仍需语义复核与提交边界守卫";
@@ -836,9 +1032,21 @@ export interface StyleRewriteCheckItem {
   rewrite: string;
   /** 原句所在段落的上下文（只读） */
   context: string;
+  /** M17.1.1：原句所在的完整句子（改写前）与拼接后的完整句子（改写后）——复核看的是读者最终读到的句子 */
+  sentenceBefore?: string;
+  sentenceAfter?: string;
 }
 
 export type StyleSemanticVerdict = "EQUIVALENT" | "CHANGED" | "UNSURE";
+/** M17.1.1：拼接后句子的通顺度（与命题等价分开判定；只可否决） */
+export type StyleFluencyVerdict = "FLUENT" | "AWKWARD" | "UNSURE";
+
+export interface StyleSemanticResult {
+  verdict: StyleSemanticVerdict;
+  /** 缺失 = 复核未给出（按 UNSURE 处理，不落盘） */
+  fluency?: StyleFluencyVerdict;
+  reason: string;
+}
 
 export function buildStyleRewriteCheckPrompt(items: readonly StyleRewriteCheckItem[]): string {
   return [
@@ -852,31 +1060,40 @@ export function buildStyleRewriteCheckPrompt(items: readonly StyleRewriteCheckIt
     "判 EQUIVALENT：改写只删除了无信息的重复限定 / 自谦 / 套话或调整了语序措辞，科学命题、证据强度与限制条件完全不变。",
     "无法确定时判 UNSURE（会被保留原文，不算失败）。",
     "",
+    "另外单独判断 fluency——读「改后整句」（改写已拼回原文后的完整句子）：",
+    "- AWKWARD（任一即是）：句子不通顺或读起来别扭；同一句内重复出现同一成分；标点衔接错误（如句子停在逗号上）；改写用词与上下文中的既有说法 / 术语不一致；",
+    "- FLUENT：改后整句通顺、与上下文衔接自然，用词与上下文一致；",
+    "- 无法判断时给 UNSURE。fluency 只看语言，不重复判断命题。",
+    "只有 verdict=EQUIVALENT 且 fluency=FLUENT 的改写会被采用；其余一律保留原文，这不算失败。",
+    "",
     "只输出一个 JSON 对象（不要 Markdown 围栏）：",
-    '{"checks": [{"id": "条目 id", "verdict": "EQUIVALENT|CHANGED|UNSURE", "reason": "一句话理由"}]}',
+    '{"checks": [{"id": "条目 id", "verdict": "EQUIVALENT|CHANGED|UNSURE", "fluency": "FLUENT|AWKWARD|UNSURE", "reason": "一句话理由（命题与语言各一句）"}]}',
     "",
     ...items.flatMap((item) => [
       `--- 条目 ${item.id}（类别 ${item.category}）---`,
       `上下文：${item.context}`,
       `原句：${item.original}`,
       `改写：${item.rewrite === "" ? "（删除该片段）" : item.rewrite}`,
+      ...(item.sentenceBefore !== undefined ? [`改前整句：${item.sentenceBefore}`] : []),
+      ...(item.sentenceAfter !== undefined ? [`改后整句：${item.sentenceAfter === "" ? "（整句已删除）" : item.sentenceAfter}`] : []),
     ]),
   ].join("\n");
 }
 
-export function parseStyleRewriteCheckOutput(parsed: Record<string, unknown>, ids: ReadonlySet<string>): Map<string, { verdict: StyleSemanticVerdict; reason: string }> {
+export function parseStyleRewriteCheckOutput(parsed: Record<string, unknown>, ids: ReadonlySet<string>): Map<string, StyleSemanticResult> {
   const raw = parsed["checks"];
   if (!Array.isArray(raw)) {
     throw new StructuredOutputError("风格改写语义复核：缺少 checks 数组", raw === undefined ? "missing_field" : "wrong_type", "checks");
   }
-  const out = new Map<string, { verdict: StyleSemanticVerdict; reason: string }>();
+  const out = new Map<string, StyleSemanticResult>();
   for (const item of raw) {
     if (typeof item !== "object" || item === null) continue;
     const record = item as Record<string, unknown>;
     const id = typeof record["id"] === "string" ? record["id"].trim() : "";
     const verdict = readEnum(record["verdict"], ["EQUIVALENT", "CHANGED", "UNSURE"] as const);
     if (!ids.has(id) || verdict === undefined || out.has(id)) continue;
-    out.set(id, { verdict, reason: typeof record["reason"] === "string" ? record["reason"].trim().slice(0, 240) : "" });
+    const fluency = readEnum(record["fluency"], ["FLUENT", "AWKWARD", "UNSURE"] as const);
+    out.set(id, { verdict, ...(fluency !== undefined ? { fluency } : {}), reason: typeof record["reason"] === "string" ? record["reason"].trim().slice(0, 240) : "" });
   }
   return out;
 }
@@ -897,7 +1114,7 @@ export interface StyleRevisionItem {
   detail: string;
   guard?: StyleRewriteCheck;
   editContract?: { ok: boolean; contractId?: string; detail?: string };
-  semantic?: { verdict: StyleSemanticVerdict | "UNAVAILABLE"; reason: string };
+  semantic?: { verdict: StyleSemanticVerdict | "UNAVAILABLE"; fluency?: StyleFluencyVerdict; reason: string };
 }
 
 export interface StyleRevisionRecord {
