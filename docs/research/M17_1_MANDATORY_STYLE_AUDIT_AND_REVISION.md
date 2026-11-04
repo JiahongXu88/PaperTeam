@@ -147,3 +147,35 @@
 4. 历史缺陷 `main.tex` 根正文整文件伪目标（§6.5），单独立项。
 5. 既有 E2E 漂移：`e2e/tests/smoke.spec.ts` 标题断言「论文项目」。
 M17.2（实验数据导入）不依赖本阶段效果结论即可开始；默认自动修订的类别白名单与上限是否调整，待 1–3 完成后决定。
+
+## 10. M17.1.1：B2 修订缺陷修复（`7b65518`）与 M17.1b 准备状态
+
+### 10.1 根因与分类
+| B2 修改 | 现象 | 根因 | 检查类型 |
+|---|---|---|---|
+| 2 | 删除「这也是本文的出发点。」后句子停在「，」上 | 锚点是逗号后的分句并带走句号；锚内守卫只比较原句 / 改写，看不到拼接边界 | 确定性：拼接边界标点 |
+| 1 | 「机制自伤」被展开改写，全文术语不一致 | 审查只看引言单元，语义复核只看一个段落；没有任何检查看全稿 | 确定性：被替换片段在全稿其他位置出现 → 视为可能的术语，不自动改 |
+| 4 | 改写补出的主语与同句锚外重复 | 锚点从句中「本文以…」开始；只有「扩写 ≤ 10%」的长度约束 | 确定性：同句重复；语义：通顺度 |
+| 共性 | 改后句子不通顺 | 语义复核只判命题等价，从未看到拼接后的整句 | 语义：复核改看改前 / 改后整句，新增独立的 fluency 判定（只可否决） |
+
+### 10.2 修改（`7b65518c33308c4aecdbddddbf3466f830d5a2ec`；Fact / Citation / EditContract 守卫与 `styleInvariants.ts` 未改）
+- `checkStyleSplice`（`backend/src/review/academicStyleAudit.ts`）：`dangling_punctuation`（前文停在，、；：上）、`double_punctuation`、`terminal_punctuation_lost`、`term_replaced`（被替换的非对冲、非样板片段在全稿其他位置出现）、`duplicate_in_sentence`（新增的 4 字片段已在同句锚外出现）。差分会合并间隔 ≤ 2 字的改动块。
+- 机器分级预检（单元文本）与 `prepareStyleRevisions`（目标文件 + 全稿语料，由 `revision.style_audit_apply` 传入）各运行一次。
+- 语义复核条目新增 `sentenceBefore` / `sentenceAfter`；输出新增 `fluency`（FLUENT / AWKWARD / UNSURE）。只有 `verdict=EQUIVALENT` 且 `fluency=FLUENT` 才落盘；缺失按 UNSURE 处理，保持原文、交作者。
+- 测试：`backend/test/review/academicStyleSplice.test.ts` 10 条定向回归（人工构造，话题与 B2 无关，每类配一条合法修改的负控制）。后端全量 445 文件 / **4904 passed / 0 failed**；typecheck 通过。
+
+### 10.3 B2 真实修改的零模型重放（`D:\PaperTeamData\M17_1\b2_replay_m1711.json`）
+| 修改 | 7b65518 判定 |
+|---|---|
+| 1 机制自伤 | 拦下：`term_replaced`（「机制自伤」在全稿其他位置出现 2 次） |
+| 2 删句 | 拦下：`dangling_punctuation` |
+| 3 删「如实报告为」 | 通过确定性检查；仍需语义复核同时给出 EQUIVALENT 和 FLUENT |
+| 4 主语重复 | 拦下：`duplicate_in_sentence`。另有 `term_replaced` **误报**（「如实报告」只是在修改 3 的锚点里也出现），偏保守，记为已知局限，不加样本专用豁免 |
+
+修改 3 的上下文核对：「实测」没有被删除，删去的只有「如实报告为」；测量来源（RDK X3 全链路实测）、数值与「非实时」结论都在同一句中保留。是否削弱了负结果披露的修辞强调，留给作者裁决，暂记「有条件接受」，不计为质量合格样本。逐条人工评审材料：`D:\PaperTeamData\M17_1\B2_HUMAN_REVIEW.md`（评分栏空白，待作者填写）。
+
+### 10.4 M17.1b 协议 v2（`D:\PaperTeamData\M17_1\M17_1B_PROTOCOL_v2.md`；v1 与 M17.1 冻结协议、B2 产物原样保留）
+- A 臂 773f78f；B 臂 **7b65518**；函数级 A/B 重放；全局上限 60 次调用。
+- 主集改为 **ChinaXiv 中文预印本**（Internet Archive 镜像检索，平台许可为 CC BY / BY-SA / BY-NC-SA / CC0 之一，逐篇核验 PDF 首页）。**排除本机 CNKI 索引**：知网会员协议规定下载文章仅限本人使用、不得传播至第三方，无法确认可以提交给云端模型服务商。
+- 12 篇 × P / L / R 三段（约 300 句）。P / L 只是候选层，真实标签全部由作者在模型输出前独立确认；分层报告召回与 R 层漏检；新增「未修改决定正确率」；盲评随机化、隐藏来源，并允许「两者都不应改动」。
+- 冻结状态：**未冻结、未产生任何模型输出**。待办：作者批准 v2 → 运行抽样脚本（零模型）→ 候选初标 → 作者逐句确认 → 填写哈希并冻结 → 才运行实验。
