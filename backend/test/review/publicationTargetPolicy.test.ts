@@ -302,6 +302,21 @@ describe("T6 作者决策 + 报告五问", () => {
     expect(text).toContain("[AI 建议 · 消融与组件贡献]");
     expect(text).toContain("不预测录用");
     expect(text).not.toMatch(/录用概率\s*[:：]|达到.{0,6}(分区|期刊)(水平|要求)(?!。$)/);
+    expect(text).toContain("下一轮可选改进清单");
+  });
+  it("「下一轮可选改进清单」说明与 revision.plan 同条件：只有 active 政策才出现；inactive 快照 / 旧 run 不出现", () => {
+    const render = (reviewPolicy: Record<string, unknown> | undefined) => buildRevisionGoalSummaryLines({
+      instructions: [],
+      review: { round: 1, issues: [issue({ origin: "whole_paper_synthesis", description: "建议补充强基线对比" })], ...(reviewPolicy !== undefined ? { reviewPolicy } : {}) },
+      gate: null,
+      journalAssessment: null,
+      currentRevision: 1,
+    }).join("\n");
+    const inactive = snapshot("existing_paper_improvement", "research_article", null);
+    expect(inactive.active).toBe(false);
+    expect(render(reviewPolicySummary(inactive)!)).not.toContain("下一轮可选改进清单");
+    expect(render(undefined)).not.toContain("下一轮可选改进清单");
+    expect(render(reviewPolicySummary(snapshot("existing_paper_improvement", "survey", null))!)).toContain("下一轮可选改进清单");
   });
 });
 

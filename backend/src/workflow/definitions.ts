@@ -2664,8 +2664,9 @@ function revisionPlanStage(services: WorkflowServices): StageSpec {
         sourceRevision,
         reviewRound: summary.round,
         summary,
-        // 冻结了发表目标政策的 run：整稿 AI 建议留作可选改进，不进入本轮自动修订（旧 run 无快照 → 行为不变）
-        ...(readReviewPolicySnapshot(ctx.state.reviewPolicy) !== null ? { deferWholePaperAdvisory: true } : {}),
+        // 冻结政策 active 的 run（设置了发表目标 / 综述 / 学位论文）：整稿 AI 建议留作可选改进，不进入本轮自动修订。
+        // createRun 对每个新 run 都冻结快照：研究论文 + 无目标 = inactive → 与旧 run（无快照）一样不延后，行为不变
+        ...(readReviewPolicySnapshot(ctx.state.reviewPolicy)?.active === true ? { deferWholePaperAdvisory: true } : {}),
         ...(reviewedSnapshot !== null ? { projectFinding: (issue) => projectFindingTarget(issue, reviewedSnapshot) } : {}),
         citationMissing: await citationMissingTargets(services, ctx.projectId),
         ...(citationRemoved.length > 0 ? { citationRemoved } : {}),

@@ -148,7 +148,8 @@ export function buildRevisionGoalSummaryLines(input: RevisionGoalSummaryInput): 
   if (next.length === 0) lines.push("- 当前没有登记的待办项。");
   else next.slice(0, 10).forEach((entry, index) => lines.push(`${index + 1}. ${entry}`));
   lines.push("");
-  lines.push("> 新一轮审稿产生的非阻断学术建议进入「下一轮可选改进清单」，不会自动追加为本轮必修项；新出现的已证实事实 / 引用回归仍按确定性守卫硬阻断。");
+  // 与 revision.plan 同一条件：只有冻结政策 active 的 run 才延后整稿 AI 建议（inactive / 旧 run 仍按既有规则派发 major）
+  if (policy?.["active"] === true) lines.push("> 新一轮审稿产生的非阻断学术建议进入「下一轮可选改进清单」，不会自动追加为本轮必修项；新出现的已证实事实 / 引用回归仍按确定性守卫硬阻断。");
   lines.push("> 本报告不预测录用，也不证明稿件达到某分区 / 期刊的学术水平。");
   lines.push("");
   return lines;

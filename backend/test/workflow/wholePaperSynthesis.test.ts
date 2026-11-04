@@ -28,7 +28,7 @@ const FILES = {
 
 interface Call { task: string; scope: string; toolPolicy?: string }
 
-async function setup(review: { wholePaperSynthesis?: "off" | "on"; wholePaperMaxChars?: number }, failWhole = false, reviewPolicy?: unknown) {
+async function setup(review: { wholePaperSynthesis?: "off" | "on"; wholePaperMaxChars?: number }, failWhole = false, reviewPolicy?: unknown, runPlan = false) {
   const scripted = scriptedIdeaRuntime();
   const calls: Call[] = [];
   const runtime = {
@@ -72,7 +72,11 @@ async function setup(review: { wholePaperSynthesis?: "off" | "on"; wholePaperMax
     emitProgress: async () => {}, emitDomain: async () => {}, log: () => {} } as unknown as StageRunContext;
   await stage.execute(ctx);
   const summary = JSON.parse(await readFile(join(stack.store.reviewsDir(projectId), "review-summary-r1.json"), "utf8")) as ReviewSummary;
-  return { calls, summary };
+  if (!runPlan) return { calls, summary };
+  const planStage = definition.stages.find((entry) => entry.id === "revision.plan")! as { execute: (c: StageRunContext) => Promise<unknown> };
+  await planStage.execute(ctx);
+  const plan = JSON.parse(await readFile(join(stack.store.reviewsDir(projectId), "revision-plan-r1.json"), "utf8")) as { items: Array<{ status: string; problem: string; note?: string }> };
+  return { calls, summary, plan };
 }
 
 describe("M16 后续：整稿综合审查实验通道", () => {
@@ -153,5 +157,28 @@ describe("发表目标审稿政策：真实 review.run 把冻结快照交给单�
     const inactive = await setup({ wholePaperSynthesis: "on" }, false, JSON.parse(JSON.stringify(generic)));
     const tasks = (calls: Call[]) => calls.map((call) => call.task).sort();
     expect(tasks(inactive.calls)).toEqual(tasks(legacy.calls));
+  });
+});
+
+describe("发表目标审稿政策 × revision.plan：只有 active 快照延后整稿 AI 建议", () => {
+  const now = new Date("2026-11-04T00:00:00Z");
+  const wholeItem = (plan: { items: Array<{ status: string; problem: string; note?: string }> }) =>
+    plan.items.find((item) => item.problem.includes("strongest recent baseline"));
+  it("createRun 为无目标研究论文冻结的 inactive 快照：计划与旧 run（无快照）相同，整稿 major 仍 planned；active 快照 → skipped（下一轮可选）", async () => {
+    const legacy = await setup({ wholePaperSynthesis: "on" }, false, undefined, true);
+    expect(wholeItem(legacy.plan!)?.status).toBe("planned");
+    const generic = freezeReviewPolicy({ documentType: "research_article" }, "existing_paper_improvement", now);
+    expect(generic.active).toBe(false);
+    const inactive = await setup({ wholePaperSynthesis: "on" }, false, JSON.parse(JSON.stringify(generic)), true);
+    expect(wholeItem(inactive.plan!)?.status).toBe("planned");
+    expect(inactive.plan!.items.map((item) => [item.problem, item.status])).toEqual(legacy.plan!.items.map((item) => [item.problem, item.status]));
+    const target = freezeReviewPolicy(
+      { documentType: "research_article", publicationTarget: normalizePublicationTarget({ scheme: "cas", tier: "3" }, { now, knownJournalIds: new Set() })! },
+      "existing_paper_improvement",
+      now,
+    );
+    const active = await setup({ wholePaperSynthesis: "on" }, false, JSON.parse(JSON.stringify(target)), true);
+    expect(wholeItem(active.plan!)).toMatchObject({ status: "skipped" });
+    expect(JSON.stringify(wholeItem(active.plan!))).toContain("下一轮可选改进清单");
   });
 });
