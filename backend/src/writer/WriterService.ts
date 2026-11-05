@@ -2075,6 +2075,9 @@ export function renderExperimentContextLines(context: ConfirmedExperimentWorkflo
   if (context === undefined) {
     return [];
   }
+  if (context.snapshot !== undefined) {
+    return renderSnapshotContextLines(context, context.snapshot);
+  }
   const header = "===== 作者已确认并授权的实验观测（Experiment Context；实验数值的唯一允许来源）=====";
   if (context.observations.length === 0) {
     return [
@@ -2101,6 +2104,57 @@ export function renderExperimentContextLines(context: ConfirmedExperimentWorkflo
     ...lines,
     "实验数值纪律：正文中的全部实验指标数值只能来自上表，并按上表的实验组 / 评测范围归属表述；上表没有的指标、范围、对照或统计量一律不得写入具体数值，须在局限性中准确说明缺少的评测，不能作为已完成贡献；" +
       "不得从工作区其它文件补充数值，不得编造，不得把作者确认表述成外部核验。",
+  ];
+}
+
+const SNAPSHOT_UNIT_TEXT: Record<string, string> = {
+  percentage: "%（百分数标度）", ratio: "（比例，0–1 标度）", count: "（计数）", fps: " FPS", seconds: " s", milliseconds: " ms", unknown: "（单位未声明）",
+};
+
+/**
+ * M17.2：冻结实验事实快照的写作上下文。数值只来自快照；幅度（差值 / 相对变化）只能引用「确定性对比」表（PaperTeam 复算，
+ * 区分百分点与相对百分比）；来源无统计检验 → 禁止显著性表述；快照失效 → 禁写任何实验数值并提示作者重新冻结。
+ */
+function renderSnapshotContextLines(context: ConfirmedExperimentWorkflowContext, snapshot: NonNullable<ConfirmedExperimentWorkflowContext["snapshot"]>): string[] {
+  const header = `===== 作者冻结的实验事实快照 ${snapshot.snapshotId}（v${snapshot.version}，内容哈希 ${snapshot.contentHash.slice(0, 12)}；实验数值的唯一允许来源）=====`;
+  if (snapshot.status === "stale") {
+    return [
+      "",
+      header,
+      `快照状态：已失效（${(snapshot.staleReasons ?? []).join("；")}）。`,
+      "实验数值纪律：快照失效期间正文不得出现任何具体实验指标数值、差值或统计量；不得改用工作区或记忆中的旧数值；" +
+        "在需要实验结果的位置写明「实验结果待作者重新确认并冻结后补充」，不得把未确认的结果写成已完成贡献。",
+    ];
+  }
+  const lines = context.observations.map((observation) => {
+    const scope = [observation.groupId, observation.split ?? "-"].join("/");
+    const tags = [observation.method, observation.dataset, observation.seed !== undefined ? `seed=${observation.seed}` : undefined, observation.protocol]
+      .filter((tag): tag is string => tag !== undefined && tag !== "")
+      .join("; ");
+    const direction = observation.direction === "higher" ? "↑" : observation.direction === "lower" ? "↓" : "方向未知";
+    return `- [${scope}] ${observation.metric}=${observation.value}${SNAPSHOT_UNIT_TEXT[observation.unit] ?? ""}（${direction}${tags ? `; ${tags}` : ""}; 来源 ${observation.path}）`;
+  });
+  const comparisons = (context.comparisons ?? []).map((comparison) => {
+    const where = [comparison.dataset, comparison.split, comparison.protocol, comparison.subset].filter((part) => part !== "").join(" / ");
+    const outcome = comparison.outcome === "subject_better" ? "前者更优" : comparison.outcome === "reference_better" ? "后者更优" : comparison.outcome === "tie_within_rounding" ? "差异在舍入精度内（不得写成提升或下降）" : "方向未知（只报告差值）";
+    return `- ${comparison.comparisonId} [${where}] ${comparison.metric}：${comparison.subject.method}（${comparison.subject.role}）${comparison.subject.value} 对 ${comparison.reference.method}（${comparison.reference.role}）${comparison.reference.value}；` +
+      `绝对差 ${comparison.absoluteDifference}；相对变化 ${comparison.relativeChange ?? "不可算"}；${outcome}`;
+  });
+  return [
+    "",
+    header,
+    `状态：${context.status}（作者确认 ≠ 外部核验）；事实 ${snapshot.factCount} 条（下表列出 ${context.observations.length} 条${context.truncated ? "，已截断" : ""}）。`,
+    ...lines,
+    "",
+    `===== 确定性对比（PaperTeam 由快照复算；同数据集 / 划分 / 协议 / 单位才配对）共 ${comparisons.length} 条 =====`,
+    ...(comparisons.length > 0 ? comparisons : ["（无可比较对：协议 / 单位 / 基线不明时只允许报告原始数值，不得写任何提升或下降幅度。）"]),
+    ...(comparisons.length > 0
+      ? [`结果表：系统会在实验结果节末尾确定性附上由本快照生成的结果表（\\label{tab:exp-${snapshot.snapshotId}}）；正文可用 Table~\\ref{tab:exp-${snapshot.snapshotId}} 引用，不要自行编写含实验数值的表格。`]
+      : []),
+    "实验数值纪律：正文中的全部实验指标数值只能来自上表，并按上表的实验组 / 数据集 / 评测范围归属表述；" +
+      "任何提升、下降、差距的幅度只能逐字引用「确定性对比」中的数值，并明确写出是「个百分点」还是「相对 %」——百分点差不得写成 %；" +
+      "上表没有的对比不得自行计算；不同数据集 / 划分 / 协议的结果不得互相比较；来源没有统计检验，不得写「显著」「significant」或任何 p 值；" +
+      "差异在舍入精度内的结果不得写成提升；不得从工作区其它文件补充数值，不得编造，不得把作者确认表述成外部核验。",
   ];
 }
 

@@ -147,6 +147,15 @@ export interface ParsedRecordCell {
   /** 表头名（首行；空表头降级为列字母；JSON/YAML = 完整结构化路径） */
   header: string;
   value: string;
+  /**
+   * M17.2 保真标注（全部可选，旧解析产物缺省 = 无标注）：
+   * - mergedFrom：XLSX 合并区域的从格（exceljs 返回主格值；值不是该格独立数据，下游不得当作独立事实）；
+   * - numberFormat：XLSX 显式数值格式为百分比（"percent"）——存储值是比例（0.669），显示为 66.9%；
+   * - formulaNoCachedValue：公式没有缓存计算结果（value 为空串；不执行公式，不猜值）。
+   */
+  mergedFrom?: string;
+  numberFormat?: "percent";
+  formulaNoCachedValue?: true;
 }
 
 export interface ParsedRecordBlock extends ParsedBlockBase {

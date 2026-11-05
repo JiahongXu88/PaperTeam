@@ -4,6 +4,8 @@ export type ExperimentRole = "main_result" | "baseline_result" | "ablation_resul
 export interface PackageFileView {
   path: string; hash: string; bytes: number; kind: string; parseStatus: string;
   sourceId?: string; role: ExperimentRole; roleBasis: string; roleConfidence: string; groupId: string; warning?: string;
+  /** M17.2：作者补充的文件级 metadata */
+  metadata?: FileExperimentMetadataView;
 }
 export interface ExperimentSplitScopeView {
   id: string;
@@ -28,6 +30,8 @@ export interface ExperimentGroupView {
 export interface MetricObservationView {
   sourceId: string; path: string; blockId: string; row?: number; sheet?: string; column?: string; jsonPath?: string;
   method?: string; dataset?: string; seed?: string; protocol?: string; split?: string; metric: string; value: number; unit: string; direction: string; groupId: string;
+  /** M17.2：原始单元格文本与单位依据 */
+  rawText?: string; unitBasis?: string; subset?: string;
 }
 export interface ReportedVerdictView {
   path: string; field: string; value: string;
@@ -176,4 +180,65 @@ export async function requestExperimentUnderstanding(projectId: string, packageI
 export async function confirmExperimentMetricEvidence(projectId: string, observation: MetricObservationView, claim: string): Promise<{ evidence: { id: string; verificationLevel: string; verificationStatus: string } }> {
   const address = observation.jsonPath ? { path: observation.jsonPath } : { row: observation.row, column: observation.column ?? observation.metric, ...(observation.sheet ? { sheet: observation.sheet } : {}) };
   return apiClient.post(`/api/projects/${encodeURIComponent(projectId)}/sources/${encodeURIComponent(observation.sourceId)}/records/evidence`, { ...address, claim });
+}
+
+// ---- M17.2 实验事实快照 ----
+export type ExperimentUnitView = "percentage" | "ratio" | "count" | "fps" | "seconds" | "milliseconds" | "unknown";
+export interface FileExperimentMetadataView {
+  method?: string; dataset?: string; split?: string; protocol?: string; seed?: string; version?: string; note?: string;
+  units?: Record<string, ExperimentUnitView>;
+}
+export interface FactSideView { factId: string; sourceLocator: string; rawText?: string; value: number; unit: ExperimentUnitView; version?: string; packageId: string }
+export interface FactConflictView { conflictId: string; code: string; key: string; factIds: string[]; detail: string; sides: FactSideView[] }
+export interface DerivedQuantityView { value: number; formulaText: string; unitLabel: string; displayDecimals: number; rounding: string }
+export interface FactComparisonView {
+  comparisonId: string;
+  context: { dataset: string; split: string; protocol: string; subset: string; metricKey: string };
+  subject: { factId: string; method: string; role: string; value: number };
+  reference: { factId: string; method: string; role: string; value: number };
+  kind: "vs_baseline" | "ablation_vs_main";
+  canonicalUnit: ExperimentUnitView;
+  absoluteDifference: DerivedQuantityView;
+  relativeChange: DerivedQuantityView | null;
+  relativeChangeUnavailable?: string;
+  outcome: "subject_better" | "reference_better" | "tie_within_rounding" | "direction_unknown";
+  operandRefs: string[];
+  limitations: string[];
+}
+export interface ExperimentFactView {
+  factId: string; sourceLocator: string; path: string; metric: string; metricKey: string; value: number; rawText?: string; unit: ExperimentUnitView;
+  method?: string; dataset?: string; split?: string; protocol?: string; seed?: string; subset?: string; version?: string; groupRole: string; authorFilled?: string[];
+}
+export interface SnapshotBodyView {
+  facts: ExperimentFactView[]; factCount: number;
+  comparisons: FactComparisonView[]; comparisonCount: number;
+  excluded: Array<{ factId: string; reason: string }>;
+  conflicts: FactConflictView[];
+  notComparable: Array<{ code: string; metricKey: string; factIds: [string, string]; detail: string }>;
+  seedAggregates: Array<{ aggregateId: string; n: number; mean: number; sampleStd: number | null }>;
+  limitations: string[];
+}
+export interface SnapshotPreviewView extends SnapshotBodyView { freezable: boolean; blockingReasons: string[] }
+export interface FrozenSnapshotView extends SnapshotBodyView { snapshotId: string; version: number; createdAt: string; contentHash: string; note?: string }
+export interface SnapshotListEntryView { snapshotId: string; version: number; createdAt: string; contentHash: string; factCount: number; comparisonCount: number; active: boolean }
+export interface ActiveSnapshotView { status: "valid" | "stale"; staleReasons?: string[]; snapshot: FrozenSnapshotView }
+
+export async function editExperimentFileMetadata(projectId: string, packageId: string, path: string, metadata: Record<string, unknown>): Promise<ExperimentPackageView> {
+  const result = await apiClient.post<{ package: ExperimentPackageView }>(`${base(projectId)}/${packageId}/file-metadata`, { path, metadata });
+  return result.package;
+}
+export async function getSnapshotPreview(projectId: string): Promise<SnapshotPreviewView> {
+  return (await apiClient.get<{ preview: SnapshotPreviewView }>(`${base(projectId)}/snapshot-preview`)).preview;
+}
+export async function freezeExperimentSnapshot(projectId: string, note?: string): Promise<FrozenSnapshotView> {
+  return (await apiClient.post<{ snapshot: FrozenSnapshotView }>(`${base(projectId)}/snapshots`, note !== undefined ? { note } : {})).snapshot;
+}
+export async function listExperimentSnapshots(projectId: string): Promise<SnapshotListEntryView[]> {
+  return (await apiClient.get<{ snapshots: SnapshotListEntryView[] }>(`${base(projectId)}/snapshots`)).snapshots;
+}
+export async function getActiveExperimentSnapshot(projectId: string): Promise<ActiveSnapshotView | null> {
+  return (await apiClient.get<{ active: ActiveSnapshotView | null }>(`${base(projectId)}/snapshots/active`)).active;
+}
+export async function decideExperimentFacts(projectId: string, decision: { exclude?: string[]; include?: string[]; reason?: string }): Promise<{ excludedCount: number }> {
+  return apiClient.post<{ excludedCount: number }>(`${base(projectId)}/fact-decisions`, decision);
 }

@@ -11,6 +11,7 @@ import { readFile } from "node:fs/promises";
 import { basename } from "node:path";
 
 import { DocumentParseFailedError } from "../errors.js";
+import { findDuplicateJsonKeys } from "./jsonDuplicateKeys.js";
 import { projectStructuredTree, structuredNodeOfJson } from "./structuredProjection.js";
 import type { DocumentExtraction, DocumentParser } from "./types.js";
 
@@ -46,6 +47,10 @@ export class JsonParser implements DocumentParser {
       );
     }
     const notes: string[] = [];
+    // M17.2：同一对象内的重复键（JSON.parse 静默后者覆盖）如实登记——实验结果「同键两值」不得悄悄消失
+    for (const path of findDuplicateJsonKeys(text)) {
+      notes.push(`JSON 重复键 ${path}：标准解析取最后一个值，前值被覆盖；请作者核对该键的正确版本`);
+    }
     const blocks = projectStructuredTree(structuredNodeOfJson(value), fileName, notes);
     return {
       parser: { id: this.id },

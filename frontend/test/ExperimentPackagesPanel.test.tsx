@@ -5,7 +5,7 @@ import userEvent from "@testing-library/user-event";
 import { ExperimentPackagesPanel } from "../src/components/project/ExperimentPackagesPanel.js";
 import { renderWithProviders } from "./helpers.js";
 import type { ExperimentPackageSummaryView, ExperimentPackageView, ObservationQueryResult } from "../src/api/experimentPackages.js";
-import { EXPERIMENT_ARCHIVE_MAX_BYTES } from "../src/api/experimentPackages.js";
+import { EXPERIMENT_ARCHIVE_MAX_BYTES, type SnapshotPreviewView } from "../src/api/experimentPackages.js";
 
 vi.mock("../src/api/experimentPackages.js", () => ({
   EXPERIMENT_ARCHIVE_MAX_BYTES: 16 * 1024 * 1024,
@@ -14,6 +14,8 @@ vi.mock("../src/api/experimentPackages.js", () => ({
   editExperimentFile: vi.fn(), confirmExperimentGroups: vi.fn(), confirmExperimentMetricEvidence: vi.fn(),
   requestExperimentUnderstanding: vi.fn(), setExperimentScopeWorkflowUse: vi.fn(), queryExperimentObservations: vi.fn(),
   rebuildExperimentPackage: vi.fn(), ensureExperimentPackagesUpgraded: vi.fn(), applyExperimentWorkflowUse: vi.fn(),
+  editExperimentFileMetadata: vi.fn(), getSnapshotPreview: vi.fn(), freezeExperimentSnapshot: vi.fn(),
+  listExperimentSnapshots: vi.fn(), getActiveExperimentSnapshot: vi.fn(), decideExperimentFacts: vi.fn(),
 }));
 const api = await import("../src/api/experimentPackages.js");
 
@@ -37,6 +39,12 @@ const observationQuery: ObservationQueryResult = {
   facets: { splits: ["Dev25"], groupIds: ["main"], methods: ["Ours"], metrics: ["HOTA"], paths: ["main/results.csv"] },
 };
 
+// M17.2 快照预览（SYNTHETIC）
+const emptyPreview: SnapshotPreviewView = {
+  facts: [], factCount: 0, comparisons: [], comparisonCount: 0, excluded: [], conflicts: [], notComparable: [], seedAggregates: [], limitations: [],
+  freezable: false, blockingReasons: ["没有可冻结的事实（需先确认并授权至少一个实验范围）"],
+};
+
 beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(api.listExperimentPackages).mockResolvedValue([packageSummary]);
@@ -47,6 +55,9 @@ beforeEach(() => {
   vi.mocked(api.editExperimentFile).mockResolvedValue(packageView);
   vi.mocked(api.setExperimentScopeWorkflowUse).mockResolvedValue({ ...packageView, groups: [{ ...packageView.groups[0]!, status: "confirmed", splitScopes: [{ ...packageView.groups[0]!.splitScopes![0]!, status: "confirmed", workflowUse: "allowed" }] }] });
   vi.mocked(api.ensureExperimentPackagesUpgraded).mockResolvedValue({ upgraded: [], preservedConfirmations: [], resetConfirmations: [] });
+  vi.mocked(api.getSnapshotPreview).mockResolvedValue(emptyPreview);
+  vi.mocked(api.getActiveExperimentSnapshot).mockResolvedValue(null);
+  vi.mocked(api.listExperimentSnapshots).mockResolvedValue([]);
   vi.mocked(api.applyExperimentWorkflowUse).mockResolvedValue({ ...packageView, groups: [{ ...packageView.groups[0]!, status: "confirmed", splitScopes: [{ ...packageView.groups[0]!.splitScopes![0]!, status: "confirmed", workflowUse: "allowed" }] }] });
 });
 

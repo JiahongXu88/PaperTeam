@@ -1393,7 +1393,57 @@ async function handleProjectResourceRoutes(
       }
       sendMethodNotAllowed(res, "GET, POST", method); return true;
     }
-    const match = /^\/(ep-[a-f0-9]{32})(\/confirm|\/understand|\/workflow-use|\/use-for-paper|\/observations|\/rebuild)?$/.exec(rest);
+    // ---- M17.2 实验事实快照：预览 / 作者排除决定 / 冻结 / 列表 / 当前状态 ----
+    // 响应有界：事实列表截 500 条并附总数；冲突与不可比全量（冲突必须完整呈现双方来源）
+    const boundedSnapshotBody = <T extends { facts: unknown[]; comparisons: unknown[] }>(value: T) => ({
+      ...value, facts: value.facts.slice(0, 500), factCount: value.facts.length, comparisons: value.comparisons.slice(0, 500), comparisonCount: value.comparisons.length,
+    });
+    if (rest === "/snapshot-preview") {
+      if (method !== "GET") { sendMethodNotAllowed(res, "GET", method); return true; }
+      sendJson(res, 200, { preview: boundedSnapshotBody(await stack.experimentPackages.previewSnapshot(projectId)) });
+      return true;
+    }
+    if (rest === "/fact-decisions") {
+      if (method !== "POST") { sendMethodNotAllowed(res, "POST", method); return true; }
+      const body = await readJsonBody(req);
+      const ids = (name: string): string[] => {
+        const value = body[name] ?? [];
+        if (!Array.isArray(value) || value.some((entry) => typeof entry !== "string")) throw new BusinessError("INVALID_REQUEST", `${name} 必须是字符串数组`);
+        return value as string[];
+      };
+      const reason = body["reason"];
+      if (reason !== undefined && typeof reason !== "string") throw new BusinessError("INVALID_REQUEST", "reason 必须是字符串");
+      const decisions = await stack.experimentPackages.decideFacts(projectId, { exclude: ids("exclude"), include: ids("include"), ...(reason !== undefined ? { reason } : {}) });
+      sendJson(res, 200, { excludedCount: Object.keys(decisions.excluded).length, excluded: decisions.excluded });
+      return true;
+    }
+    if (rest === "/snapshots") {
+      if (method === "GET") { sendJson(res, 200, { snapshots: await stack.experimentPackages.listSnapshots(projectId) }); return true; }
+      if (method === "POST") {
+        const body = await readJsonBody(req);
+        const note = body["note"];
+        if (note !== undefined && typeof note !== "string") throw new BusinessError("INVALID_REQUEST", "note 必须是字符串");
+        const snapshot = await stack.experimentPackages.freezeSnapshot(projectId, note);
+        sendJson(res, 201, { snapshot: boundedSnapshotBody(snapshot) });
+        return true;
+      }
+      sendMethodNotAllowed(res, "GET, POST", method); return true;
+    }
+    if (rest === "/snapshots/active") {
+      if (method !== "GET") { sendMethodNotAllowed(res, "GET", method); return true; }
+      const state = await stack.experimentPackages.activeSnapshotState(projectId);
+      sendJson(res, 200, state === null
+        ? { active: null }
+        : { active: { status: state.status, ...(state.status === "stale" ? { staleReasons: state.staleReasons } : {}), snapshot: boundedSnapshotBody(state.snapshot) } });
+      return true;
+    }
+    const snapshotMatch = /^\/snapshots\/(efs-\d{4})$/.exec(rest);
+    if (snapshotMatch) {
+      if (method !== "GET") { sendMethodNotAllowed(res, "GET", method); return true; }
+      sendJson(res, 200, { snapshot: boundedSnapshotBody(await stack.experimentPackages.getSnapshot(projectId, snapshotMatch[1]!)) });
+      return true;
+    }
+    const match = /^\/(ep-[a-f0-9]{32})(\/confirm|\/understand|\/workflow-use|\/use-for-paper|\/observations|\/rebuild|\/file-metadata)?$/.exec(rest);
     if (!match) return false;
     const packageId = match[1]!;
     if (match[2] === "/understand") {
@@ -1418,6 +1468,16 @@ async function handleProjectResourceRoutes(
         scopeIds: stringArrayField("scopeIds"),
         excludeScopeIds: stringArrayField("excludeScopeIds"),
       }));
+      return true;
+    }
+    if (match[2] === "/file-metadata") {
+      // M17.2 作者补充文件级 metadata（方法 / 数据集 / 划分 / 协议 / seed / 版本 / 指标单位）；重建观测，既有确认失效
+      if (method !== "POST") { sendMethodNotAllowed(res, "POST", method); return true; }
+      const body = await readJsonBody(req);
+      const path = readStringField(body, "path");
+      const metadata = body["metadata"];
+      if (!path || typeof metadata !== "object" || metadata === null || Array.isArray(metadata)) throw new BusinessError("INVALID_REQUEST", "需要 path 与 metadata 对象");
+      sendPackage(200, await stack.experimentPackages.editFileMetadata(projectId, packageId, path, metadata as Record<string, unknown>));
       return true;
     }
     if (match[2] === "/rebuild") {

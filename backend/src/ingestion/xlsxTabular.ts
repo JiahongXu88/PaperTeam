@@ -7,7 +7,7 @@
  * 表头名 + 列字母。损坏文件 / 非表格内容抛 DocumentParseFailedError，
  * 不静默。
  *
- * 已知边界（如实，不伪装）：合并单元格只有左上主格有值；公式取计算结果
+ * 已知边界（如实，不伪装）：合并单元格从格标 mergedFrom（M17.2）；公式取缓存计算结果，无缓存标 formulaNoCachedValue；
  *（公式文本不保留）；日期统一 ISO 字符串。
  */
 
@@ -107,15 +107,29 @@ export class XlsxParser implements DocumentParser {
         const cells: ParsedRecordCell[] = [];
         const width = Math.max(row.cellCount, headerCount);
         for (let colIndex = 1; colIndex <= width; colIndex += 1) {
-          const value = stringifyCell(row.getCell(colIndex).value);
+          const cell = row.getCell(colIndex);
+          const headerIndex = colIndex - 1;
+          const letter = columnLetter(headerIndex);
+          const header = headers[headerIndex] ?? letter;
+          // M17.2：公式无缓存结果——不执行公式、不猜值；登记为显式空值并写 note（不静默消失）
+          if (isFormulaWithoutCachedValue(cell.value)) {
+            cells.push({ letter, header, value: "", formulaNoCachedValue: true });
+            notes.push(`工作表 ${sheetName} ${letter}${rowIndex}：公式没有缓存计算结果，值记为未知（不执行公式）`);
+            continue;
+          }
+          const value = stringifyCell(cell.value);
           if (value === "") {
             continue;
           }
-          const headerIndex = colIndex - 1;
+          const master = cell.isMerged ? cell.master : undefined;
           cells.push({
-            letter: columnLetter(headerIndex),
-            header: headers[headerIndex] ?? columnLetter(headerIndex),
+            letter,
+            header,
             value: clipCell(value, notes),
+            ...(master !== undefined && master.address !== cell.address ? { mergedFrom: master.address } : {}),
+            ...(typeof cell.numFmt === "string" && /%/.test(cell.numFmt.replace(/"[^"]*"/g, "")) && typeof cell.value === "number"
+              ? { numberFormat: "percent" as const }
+              : {}),
           });
         }
         if (cells.length === 0) {
@@ -190,6 +204,13 @@ function stringifyCell(value: unknown): string {
     }
   }
   return "";
+}
+
+function isFormulaWithoutCachedValue(value: unknown): boolean {
+  if (value === null || typeof value !== "object" || value instanceof Date) return false;
+  const record = value as Record<string, unknown>;
+  const isFormula = typeof record["formula"] === "string" || typeof record["sharedFormula"] === "string";
+  return isFormula && (record["result"] === undefined || record["result"] === null);
 }
 
 function clipCell(value: string, notes: string[]): string {

@@ -11,6 +11,7 @@ import {
   EXPERIMENT_ARCHIVE_MAX_BYTES,
   experimentArchiveLimitMessage,
   editExperimentFile,
+  editExperimentFileMetadata,
   getExperimentPackage,
   listExperimentPackages,
   queryExperimentObservations,
@@ -20,10 +21,13 @@ import {
   uploadExperimentPackage,
   type ExperimentRole,
   type ExperimentPackageView,
+  type FileExperimentMetadataView,
   type ExperimentSplitScopeView,
   type MetricObservationView,
 } from "../../api/experimentPackages.js";
 import { formatApiError } from "../../utils/errors.js";
+import { bundleExperimentFiles, LOOSE_EXPERIMENT_EXTENSIONS } from "../../api/storeZip.js";
+import { ExperimentSnapshotSection, SNAPSHOT_QUERY_KEY } from "./ExperimentSnapshotSection.js";
 
 /**
  * 实验数据工作台（M13.5 重构；M13.6 收敛用户操作成本）。
@@ -96,7 +100,7 @@ function stepState(item: {
 export function ExperimentPackagesPanel({ projectId }: { projectId: string }) {
   const queryClient = useQueryClient();
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [file, setFile] = useState<File | null>(null);
+  const [files, setFiles] = useState<File[]>([]);
   const [message, setMessage] = useState("");
   const [uploadValidationError, setUploadValidationError] = useState("");
   const list = useQuery({ queryKey: ["experiment-packages", projectId], queryFn: () => listExperimentPackages(projectId) });
@@ -106,6 +110,7 @@ export function ExperimentPackagesPanel({ projectId }: { projectId: string }) {
     await queryClient.invalidateQueries({ queryKey: ["experiment-packages", projectId] });
     await queryClient.invalidateQueries({ queryKey: ["experiment-package", projectId, packageId] });
     await queryClient.invalidateQueries({ queryKey: ["figure-datasets", projectId] });
+    await queryClient.invalidateQueries({ queryKey: [SNAPSHOT_QUERY_KEY, projectId] });
   };
   const refreshAll = async () => {
     await queryClient.invalidateQueries({ queryKey: ["experiment-packages", projectId] });
@@ -144,13 +149,23 @@ export function ExperimentPackagesPanel({ projectId }: { projectId: string }) {
   }, [list.data, ensureUpgrade]);
   const upload = useMutation({
     mutationFn: async () => {
-      if (!file) throw new Error("请选择 ZIP 文件");
-      return uploadExperimentPackage(projectId, file);
+      if (files.length === 0) throw new Error("请选择 ZIP 或实验结果文件");
+      // M17.2：单个 ZIP 原样上传；单 / 多个 CSV·XLSX·JSON·TXT·YAML 在浏览器端打成确定性 ZIP，复用同一上传与解析链路
+      const archive = files.length === 1 && files[0]!.name.toLowerCase().endsWith(".zip") ? files[0]! : await bundleExperimentFiles(files);
+      if (archive.size > EXPERIMENT_ARCHIVE_MAX_BYTES) throw new Error(experimentArchiveLimitMessage(archive));
+      return uploadExperimentPackage(projectId, archive);
     },
     onSuccess: async (item) => {
       setSelectedId(item.packageId);
       setMessage("实验包已读取。下一步：核对实验范围与指标，或先运行 AI 辅助实验理解。");
       await refresh(item.packageId);
+    },
+  });
+  const editMetadata = useMutation({
+    mutationFn: (input: { path: string; metadata: Record<string, unknown> }) => editExperimentFileMetadata(projectId, currentId!, input.path, input.metadata),
+    onSuccess: async () => {
+      setMessage("文件 metadata 已更新：观测已按新 metadata 重建，该包的确认与授权已失效，请重新核对后再冻结快照。");
+      await refresh(currentId!);
     },
   });
   const edit = useMutation({
@@ -211,11 +226,16 @@ export function ExperimentPackagesPanel({ projectId }: { projectId: string }) {
       {/* 步骤 1：上传 */}
       <div className="form-row">
         <label>
-          选择 ZIP <input aria-label="选择实验 ZIP" type="file" accept=".zip,application/zip" onChange={(event) => { setFile(event.target.files?.[0] ?? null); setUploadValidationError(""); upload.reset(); }} />
+          选择 ZIP 或结果文件 <input aria-label="选择实验 ZIP" type="file" multiple accept={[".zip", ...LOOSE_EXPERIMENT_EXTENSIONS].join(",")} onChange={(event) => { setFiles(Array.from(event.target.files ?? [])); setUploadValidationError(""); upload.reset(); }} />
         </label>
-        <button type="button" disabled={!file || upload.isPending} onClick={() => {
-          if (file && file.size > EXPERIMENT_ARCHIVE_MAX_BYTES) {
-            setUploadValidationError(experimentArchiveLimitMessage(file));
+        <button type="button" disabled={files.length === 0 || upload.isPending} onClick={() => {
+          const zipFile = files.length === 1 && files[0]!.name.toLowerCase().endsWith(".zip") ? files[0]! : null;
+          if (zipFile && zipFile.size > EXPERIMENT_ARCHIVE_MAX_BYTES) {
+            setUploadValidationError(experimentArchiveLimitMessage(zipFile));
+            return;
+          }
+          if (files.length > 1 && files.some((entry) => entry.name.toLowerCase().endsWith(".zip"))) {
+            setUploadValidationError("ZIP 请单独上传；多个文件同时上传时只支持 CSV / XLSX / JSON / TXT / YAML");
             return;
           }
           setUploadValidationError("");
@@ -224,16 +244,16 @@ export function ExperimentPackagesPanel({ projectId }: { projectId: string }) {
           {upload.isPending ? "上传并解析中…" : "上传实验包"}
         </button>
       </div>
-      <p className="muted">上限：ZIP 16 MiB、2000 个文件、目录 16 级、单文件 20 MiB、解压总量 64 MiB；不会执行包内代码。目录可先在本机压缩为 ZIP。</p>
+      <p className="muted">可上传一个 ZIP，或直接选择一个 / 多个 CSV、XLSX、JSON、TXT（如 TrackEval summary）、YAML 文件（浏览器端打包，原文件字节与哈希不变）。上限：16 MiB、2000 个文件、单文件 20 MiB；不会执行任何公式、宏或代码。</p>
       {uploadValidationError && <p role="alert" className="run-error">{uploadValidationError}</p>}
       {upload.isError && (
         <p role="alert" className="run-error">
           {formatApiError(upload.error)}
         </p>
       )}
-      {(edit.isError || confirm.isError || workflowUse.isError || useForPaper.isError || ensureUpgrade.isError) && (
+      {(edit.isError || editMetadata.isError || confirm.isError || workflowUse.isError || useForPaper.isError || ensureUpgrade.isError) && (
         <p role="alert" className="run-error">
-          {formatApiError(edit.error ?? confirm.error ?? workflowUse.error ?? useForPaper.error ?? ensureUpgrade.error)}
+          {formatApiError(edit.error ?? editMetadata.error ?? confirm.error ?? workflowUse.error ?? useForPaper.error ?? ensureUpgrade.error)}
         </p>
       )}
       {message && <p role="status">{message}</p>}
@@ -259,6 +279,8 @@ export function ExperimentPackagesPanel({ projectId }: { projectId: string }) {
           )}
         </>
       )}
+
+      {list.data !== undefined && list.data.length > 0 && <ExperimentSnapshotSection projectId={projectId} />}
 
       {currentId !== null &&
         (detail.isPending ? (
@@ -335,7 +357,7 @@ export function ExperimentPackagesPanel({ projectId }: { projectId: string }) {
               <MetricsBrowser projectId={projectId} packageId={currentId} confirmedGroupIds={new Set(item.groups.filter((group) => group.status === "confirmed").map((group) => group.id))} />
 
               {/* 步骤 5：文件清单（默认折叠） */}
-              <FilesSection item={item} editPending={edit.isPending} onEdit={(input) => edit.mutate(input)} />
+              <FilesSection item={item} editPending={edit.isPending || editMetadata.isPending} onEdit={(input) => edit.mutate(input)} onEditMetadata={(input) => editMetadata.mutate(input)} />
 
               {/* 用于论文写作 */}
               <WorkflowReadySection item={item} workflowReadyScopes={steps?.workflowReady ?? []} />
@@ -988,7 +1010,7 @@ function MetricsBrowser({ projectId, packageId, confirmedGroupIds }: { projectId
 
 const FILES_PAGE_SIZE = 20;
 
-function FilesSection({ item, editPending, onEdit }: { item: NonNullable<ReturnType<typeof getExperimentPackage> extends Promise<infer T> ? T : never>; editPending: boolean; onEdit: (input: { path: string; role: ExperimentRole; groupId: string }) => void }) {
+function FilesSection({ item, editPending, onEdit, onEditMetadata }: { item: NonNullable<ReturnType<typeof getExperimentPackage> extends Promise<infer T> ? T : never>; editPending: boolean; onEdit: (input: { path: string; role: ExperimentRole; groupId: string }) => void; onEditMetadata: (input: { path: string; metadata: Record<string, unknown> }) => void }) {
   const [search, setSearch] = useState("");
   const [roleFilter, setRoleFilter] = useState("");
   const [statusFilter, setStatusFilter] = useState("");
@@ -1099,6 +1121,9 @@ function FilesSection({ item, editPending, onEdit }: { item: NonNullable<ReturnT
                       </div>
                       <p className="muted">修改任一文件会使该包的全部确认与工作流授权失效（需重新核对）。</p>
                     </details>
+                    {["main_result", "baseline_result", "ablation_result"].includes(entry.role) && (
+                      <FileMetadataEditor path={entry.path} metadata={entry.metadata} pending={editPending} onSave={(metadata) => onEditMetadata({ path: entry.path, metadata })} />
+                    )}
                   </td>
                 </tr>
               ))}
@@ -1142,5 +1167,48 @@ function WorkflowReadySection({ item, workflowReadyScopes }: { item: NonNullable
       )}
       <p className="muted">已解析 ≠ 已关联 ≠ 作者已确认 ≠ 允许进入工作流 ≠ Evidence Verification。</p>
     </section>
+  );
+}
+
+const METADATA_FIELDS: Array<{ key: "method" | "dataset" | "split" | "protocol" | "seed" | "version"; label: string }> = [
+  { key: "method", label: "方法" }, { key: "dataset", label: "数据集" }, { key: "split", label: "划分" },
+  { key: "protocol", label: "评测协议" }, { key: "seed", label: "seed" }, { key: "version", label: "版本" },
+];
+const UNIT_OPTIONS = ["percentage", "ratio", "count", "fps", "seconds", "milliseconds"];
+
+/** M17.2：文件级 metadata（只填补文件内缺失字段；与文件内显式值矛盾时系统报冲突而不覆盖）与指标单位声明 */
+function FileMetadataEditor({ path, metadata, pending, onSave }: { path: string; metadata: FileExperimentMetadataView | undefined; pending: boolean; onSave: (metadata: Record<string, unknown>) => void }) {
+  const [draft, setDraft] = useState<Record<string, string>>(() => Object.fromEntries(METADATA_FIELDS.map((field) => [field.key, metadata?.[field.key] ?? ""])));
+  const [units, setUnits] = useState(() => Object.entries(metadata?.units ?? {}).map(([metric, unit]) => `${metric}=${unit}`).join("; "));
+  const [error, setError] = useState("");
+  const submit = () => {
+    const parsedUnits: Record<string, string> = {};
+    for (const part of units.split(/[;；\n]/).map((entry) => entry.trim()).filter((entry) => entry !== "")) {
+      const [metric, unit] = part.split("=").map((value) => value.trim());
+      if (!metric || !unit || !UNIT_OPTIONS.includes(unit)) { setError(`单位声明格式应为「指标=单位」，单位取 ${UNIT_OPTIONS.join(" / ")}：${part}`); return; }
+      parsedUnits[metric] = unit;
+    }
+    setError("");
+    onSave({ ...Object.fromEntries(METADATA_FIELDS.map((field) => [field.key, draft[field.key]?.trim() ? draft[field.key]!.trim() : null])), units: Object.keys(parsedUnits).length > 0 ? parsedUnits : null });
+  };
+  return (
+    <details className="details-block" data-testid={`file-metadata-${path}`}>
+      <summary>补充实验 metadata{metadata !== undefined ? "（已填写）" : ""}</summary>
+      <div className="form-row">
+        {METADATA_FIELDS.map((field) => (
+          <label key={field.key}>
+            {field.label}
+            <input aria-label={`${path} ${field.label}`} value={draft[field.key] ?? ""} maxLength={96} onChange={(event) => setDraft((value) => ({ ...value, [field.key]: event.target.value }))} />
+          </label>
+        ))}
+      </div>
+      <label>
+        指标单位（如 HOTA=percentage; IDF1=ratio；* 表示本文件全部未声明指标）
+        <input aria-label={`${path} 指标单位`} value={units} onChange={(event) => setUnits(event.target.value)} placeholder="HOTA=percentage; IDSW=count" />
+      </label>
+      <button type="button" className="btn btn-small" disabled={pending} onClick={submit}>保存 metadata</button>
+      {error && <p role="alert" className="run-error">{error}</p>}
+      <p className="muted">文件内已有的列值优先；这里只补缺失项。单位只在文件没有显式标注时生效（不会按数值大小猜单位）。保存后该包的确认需重新核对。</p>
+    </details>
   );
 }

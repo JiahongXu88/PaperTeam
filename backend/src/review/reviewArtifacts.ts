@@ -426,6 +426,14 @@ export class ReviewArtifactStore {
    * M14.9.5.4：同轮实验论断复算账本（reviews/claim-checks-r{round}.json）。review.run 在审稿前计算并注入 prompt，
    * quality.gate 消费同一份（计划在审稿后变更时由 gate 重算并标注）。
    */
+  /** M17.2：实验事实快照核查账本（review.run 写；确定性，可复现） */
+  async saveExperimentFactAudit(projectId: string, round: number, audit: unknown): Promise<string> {
+    const fileName = `experiment-fact-audit-r${round}.json`;
+    await mkdir(this.projects.reviewsDir(projectId), { recursive: true });
+    await writeJsonAtomic(join(this.projects.reviewsDir(projectId), fileName), { round, ...(audit as Record<string, unknown>) });
+    return `reviews/${fileName}`;
+  }
+
   async saveClaimCheckLedger(projectId: string, round: number, ledger: ClaimCheckLedger): Promise<string> {
     const fileName = `claim-checks-r${round}.json`;
     await mkdir(this.projects.reviewsDir(projectId), { recursive: true });

@@ -270,6 +270,8 @@ import {
   normalizeSectionKey,
   type ClaimRepairDirective,
 } from "../review/claimGrounding.js";
+import { auditExperimentFacts } from "../review/experimentFactAudit.js";
+import { mentionedMetrics, renderSnapshotResultsTable, selectResultsSection } from "../experiments/resultsTable.js";
 import type { ReviewArtifactStore } from "../review/reviewArtifacts.js";
 import { buildRevisionPlan, dispatchableRevisionItems, findingFingerprint, type RevisionPlan, type RevisionPlanItem } from "../review/revisionPlan.js";
 import { adaptLineEndingsToSpan, alignProposalToSpan, applyRevisionSpan, checkMultiRangeScope, checkGlobalRevisionScope, checkRevisionScope, describeScopeViolation, hasNewContentAfterDocumentEnd, isWholeQuoteDeletion, hasRevisionWorkspaceMutation, locateLatexSections, revisionSourceHash, revisionSpansOverlap, verifyNoopCoverage, type RevisionSpan } from "../review/revisionScope.js";
@@ -1737,6 +1739,50 @@ function reviewRunStageInner(
         if (claimCheckLedger.results.length > 0 || claimCheckLedger.planError !== undefined) {
           await services.reviewArtifacts.saveClaimCheckLedger(ctx.projectId, round, claimCheckLedger);
           ctx.log(`[review] 实验论断复算：登记 ${claimCheckLedger.counts.registered}，一致 ${claimCheckLedger.counts.consistent}，矛盾 ${claimCheckLedger.counts.contradicted}，未能复算 ${claimCheckLedger.counts.notEvaluated}（账本 ${claimCheckLedger.ledgerHash.slice(0, 12)}）`);
+        }
+      }
+      /**
+       * M17.2：实验事实快照确定性核查——稿件中的提升 / 下降幅度与「显著」表述对照当前冻结快照（pp↔% 混淆、幅度不在快照、
+       * 无可比较对仍给幅度、无统计检验的显著性）。无快照 = 不运行（行为不变）；综述 / 已发表论文只读评估不适用。
+       */
+      if (options.survey !== true && !publishedAssessment) {
+        const snapshotState = await services.experimentPackages.activeSnapshotState(ctx.projectId);
+        if (snapshotState !== null) {
+          const audit = auditExperimentFacts(
+            latexForAttribution.allTex.map((file) => ({ file: file.relativePath, content: file.content })),
+            snapshotState.snapshot,
+            snapshotState.status,
+          );
+          for (const finding of audit.findings) {
+            const unit = finding.quote.length >= 12 ? unitLocator.find((entry) => normalizeAnchorText(entry.text).includes(normalizeAnchorText(finding.quote))) : undefined;
+            summary.issues.push({
+              category: "fact",
+              severity: finding.severity,
+              section: unit?.heading ?? finding.file,
+              description: `实验数值核查（${finding.code}）：${finding.detail}`,
+              suggestedAction: finding.code === "EXP_UNTESTED_SIGNIFICANCE"
+                ? "删除「显著」/ p 值表述，改为如实报告差值与单次运行的局限；若有真实统计检验，作为实验数据导入并重新冻结快照。"
+                : finding.code === "EXP_SNAPSHOT_STALE"
+                  ? "请作者在「实验数据包」中核对变化并重新冻结快照，再复核稿件中的实验数值。"
+                  : "按快照中的确定性对比改写幅度，并写明是「个百分点」还是「相对 %」；快照中没有的对比不要给出幅度。",
+              reason: `PaperTeam 对照实验事实快照 ${audit.snapshotId}（内容哈希 ${audit.snapshotContentHash.slice(0, 12)}）确定性核查；快照为作者确认数据，未经外部核验`,
+              evidenceRequirement: "required",
+              blocking: false,
+              rootCauseKey: `experiment-fact:${finding.findingId}`,
+              ...(finding.quote.length >= 12 ? { quote: finding.quote } : {}),
+              ...(unit !== undefined ? { file: unit.file, logicalSection: unit.spanId } : { file: finding.file }),
+              experimentFact: {
+                findingId: finding.findingId, code: finding.code, snapshotId: audit.snapshotId, snapshotContentHash: audit.snapshotContentHash,
+                comparisonIds: finding.matchedComparisonIds, operandLocators: finding.operandLocators,
+                ...(finding.claimedValue !== undefined ? { claimedValue: finding.claimedValue } : {}),
+                ...(finding.claimedKind !== undefined ? { claimedKind: finding.claimedKind } : {}),
+              },
+            });
+            if (finding.severity === "major") { summary.counts.major += 1; summary.openMajor += 1; } else { summary.counts.minor += 1; }
+            summary.counts.byCategory["fact"] = (summary.counts.byCategory["fact"] ?? 0) + 1;
+          }
+          await services.reviewArtifacts.saveExperimentFactAudit(ctx.projectId, round, audit);
+          ctx.log(`[review] 实验事实快照核查：快照 ${audit.snapshotId}（${audit.snapshotStatus}），幅度主张 ${audit.checkedClaims}，一致 ${audit.consistent.length}，finding ${audit.findings.length}（${[...new Set(audit.findings.map((entry) => entry.code))].join("、") || "无"}）`);
         }
       }
       // M15.1：Review Claim Ledger + finding provenance audit + 只读引用审计（shadow；生产 Gate 不读）
@@ -8337,6 +8383,19 @@ function writingSectionsStage(services: WorkflowServices): StageSpec {
       const reused: string[] = [];
       const writtenLatex: Array<{ id: string; title: string; latex: string }> = [];
       const usedEvidenceIds = new Set<string>();
+      // M17.2：冻结快照 → 确定性结果表（零 LLM）在结果节末尾追加，与初稿同一修订提交；无快照 / 无对比 / 无结果节 = 无表决定（记录原因）
+      const snapshotTable = experimentContext.snapshot !== undefined ? renderSnapshotResultsTable(experimentContext, language !== undefined ? { language } : {}) : null;
+      const tableSection = snapshotTable?.table != null ? selectResultsSection(writerOutline.sections) : null;
+      const resultsTableDecision = snapshotTable === null
+        ? undefined
+        : snapshotTable.table === null
+          ? { inserted: false, reason: snapshotTable.reason }
+          : tableSection === null
+            ? { inserted: false, reason: "大纲中没有实验 / 结果章节" }
+            : { inserted: true, label: snapshotTable.table.label, sectionId: tableSection.id, metrics: snapshotTable.table.metrics, rows: snapshotTable.table.rowCount };
+      if (resultsTableDecision !== undefined) {
+        ctx.log(`[writing] 实验结果表：${resultsTableDecision.inserted ? `确定性附于 ${tableSection!.id}（${snapshotTable!.table!.label}）` : `不生成（${resultsTableDecision.reason}）`}`);
+      }
       for (const [index, section] of writerOutline.sections.entries()) {
         if (ctx.signal.aborted) {
           throw new BusinessError("WORKFLOW_CANCELLED", "写作已被取消");
@@ -8379,6 +8438,16 @@ function writingSectionsStage(services: WorkflowServices): StageSpec {
             await updateWritingPlanSection(services, ctx.projectId, plan, section.id, { status: "failed", latencyMs: Date.now() - startedAt });
           }
           throw error;
+        }
+        if (tableSection !== null && tableSection.id === section.id && snapshotTable?.table != null && !result.latex.includes(snapshotTable.table.label)) {
+          // 列优先取本节及此前各节正文实际提及的指标（表与正文一致；仍是快照数值的确定性抄录）
+          const written = [...writtenLatex.map((entry) => entry.latex), result.latex].join("\n");
+          const metricsInText = mentionedMetrics(written, [...new Set((experimentContext.comparisons ?? []).map((comparison) => comparison.metric))]);
+          const table = renderSnapshotResultsTable(experimentContext, { ...(language !== undefined ? { language } : {}), preferMetrics: metricsInText });
+          if (table.table !== null) {
+            result = { ...result, latex: `${result.latex.trimEnd()}\n\n${table.table.latex}\n` };
+            if (resultsTableDecision?.inserted === true) resultsTableDecision.metrics = table.table.metrics;
+          }
         }
         bytesTotal += await services.manuscript.writeSection(ctx.projectId, section, result.latex);
         written.push(section.id);
@@ -8437,6 +8506,11 @@ function writingSectionsStage(services: WorkflowServices): StageSpec {
         evidenceExcluded: evidenceSelection.excluded,
         ...(plan !== undefined ? { argumentUnits: summarizeWritingPlan(plan) } : { argumentUnits: { enabled: false } }),
         ...(redundancy !== undefined ? { redundancy } : {}),
+        // M17.2：本次写作消费的实验事实快照与结果表决定（运行记录可见；无快照 = 缺省）
+        ...(experimentContext.snapshot !== undefined
+          ? { experimentSnapshot: { snapshotId: experimentContext.snapshot.snapshotId, version: experimentContext.snapshot.version, contentHash: experimentContext.snapshot.contentHash, status: experimentContext.snapshot.status, comparisons: experimentContext.comparisons?.length ?? 0 } }
+          : {}),
+        ...(resultsTableDecision !== undefined ? { resultsTable: resultsTableDecision } : {}),
       };
     },
     async verifyDod(ctx) {
@@ -12198,7 +12272,7 @@ function thesisAuthorDecisionStage(services: WorkflowServices): StageSpec {
     producedOutputs: ["research/author-decisions.jsonl"],
     hitl: {
       prompt:
-        "以下章节声明了核心研究贡献，但没有可写的已确认实验事实。请作者决定处理方式：write_as_limitation（以研究限制口径撰写）、defer_chapter（暂缓，仍按限制口径占位）、attach_experiment_package（上传实验包并确认事实后继续）、pause（保持等待）。系统不会为缺失材料生成任何实验数值。",
+        "以下章节声明了核心研究贡献，但没有可写的已确认实验事实。请作者决定处理方式：write_as_limitation（以研究限制口径撰写）、defer_chapter（暂缓，仍按限制口径占位）、attach_experiment_package（上传实验包、确认并冻结实验事实快照后继续）、pause（保持等待）。系统不会为缺失材料生成任何实验数值。",
       options: ["write_as_limitation", "defer_chapter", "attach_experiment_package", "supply_research_record", "supply_manuscript", "confirm_missing", "reject_gap", "pause", "approve", "cancel"],
       payload: async (ctx) => {
         const missing = await services.thesis.planner.missingMaterialChapters(ctx.projectId);
@@ -13921,6 +13995,23 @@ async function applyThesisAuthorDecision(
   const actor = readThesisActor(services, input.payload);
   if (input.decision !== "approve") {
     const payload = authorDecisionFromResumeInput({ decision: input.decision, payload: input.payload });
+    // M17.2：「附实验包后继续」必须真的有可用实验数据——当前项目须有有效（未失效、非空）的冻结实验事实快照；
+    // 只上传任意 CSV / 只选这个选项不能解锁缺材料门禁
+    const attachesExperiment = (payload.type === "writing_pause" && payload.decision === "attach_experiment_package") ||
+      (payload.type === "missing_material_decision" && payload.decision === "supply_experiment_data");
+    if (attachesExperiment) {
+      const snapshot = await services.experimentPackages.activeSnapshotState(state.projectId);
+      if (snapshot === null || snapshot.status !== "valid" || snapshot.snapshot.facts.length === 0) {
+        throw new BusinessError(
+          "INVALID_REQUEST",
+          snapshot === null
+            ? "尚未冻结实验事实快照：请先在「实验数据包」上传实验数据、确认并授权范围、冻结快照，再选择「附实验包后继续」"
+            : snapshot.status !== "valid"
+              ? `当前实验事实快照 ${snapshot.snapshot.snapshotId} 已失效，请重新冻结后再选择「附实验包后继续」`
+              : "当前实验事实快照不含任何事实",
+        );
+      }
+    }
     await services.thesis.researchInputs.submitDecision(state.projectId, { actor, payload });
     // M14.6：缺口决定若对应已规划章且选择了写作处置（限制口径 / 暂缓 / 附实验包），同步镜像为
     // writing_pause 决定——Planner 的缺材料章抑制与 Writer 的限制口径都消费 writing_pause

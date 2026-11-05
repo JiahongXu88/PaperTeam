@@ -177,6 +177,11 @@ export interface ReviewIssue {
    */
   claimCheck?: { id: string; verdict: "CONTRADICTED"; manuscriptValue: number; derivedValue: number | null; ledgerHash: string; dataSha256: string | null };
   /**
+   * M17.2：实验事实快照确定性核查（review/experimentFactAudit；review.run 生成，模型不产出）——快照版本、对比 id 与
+   * 操作数来源定位随 finding 可追溯（账本 reviews/experiment-fact-audit-r{round}.json）。
+   */
+  experimentFact?: { findingId: string; code: string; snapshotId: string; snapshotContentHash: string; comparisonIds: string[]; operandLocators: string[]; claimedValue?: number; claimedKind?: "pp" | "percent" };
+  /**
    * M17.1：风格类 finding 的机器侧严重度政策（ReviewAggregator 写入，模型不产出）。style 是建议性 / 可修复问题：
    * 模型给出的 critical / major / blocking 原样保留在 modelSeverity / modelBlocking，计数口径钳为 minor、非 blocking——
    * 不靠提示词，也不让风格建议变成科学正确性硬 FAIL。

@@ -11,6 +11,11 @@ import type { SourceStore } from "../sources/SourceStore.js";
 import { writeJsonAtomic } from "../util/atomic.js";
 import { sha256Hex } from "../util/hash.js";
 import { hashArchive, sourceNameFor, visitArchive, type ArchiveEntryInfo } from "./archive.js";
+import { EXPERIMENT_UNITS, headerUnit, parseMetricCell, toCanonical, type ExperimentUnit, type UnitBasis } from "./metricUnits.js";
+import {
+  FACT_SNAPSHOT_SCHEMA, buildFactSnapshotContent, factIdOf, formatDerived, snapshotContentHash,
+  type FactComparison, type FactSnapshot, type FactSnapshotBuild, type SnapshotInputObservation,
+} from "./factSnapshot.js";
 import {
   CLAIM_CHECK_PLAN_FILE,
   evaluateClaimCheckPlan,
@@ -44,7 +49,24 @@ export interface PackageFile {
   roleConfidence: "high" | "candidate";
   groupId: string;
   warning?: string;
+  /**
+   * M17.2 作者补充的文件级实验 metadata：只**填补**文件内缺失的上下文字段（文件内显式值优先；两者矛盾 → 组冲突，
+   * 不覆盖）；units 按指标名（或 "*" = 该文件全部未知单位指标）声明标度。编辑即重建观测，既有确认失效。
+   */
+  metadata?: FileExperimentMetadata;
 }
+export interface FileExperimentMetadata {
+  method?: string;
+  dataset?: string;
+  split?: string;
+  protocol?: string;
+  seed?: string;
+  version?: string;
+  units?: Record<string, ExperimentUnit>;
+  /** 作者备注（如评测器版本 / 阈值）；只展示，不参与计算 */
+  note?: string;
+}
+export const FILE_METADATA_FIELDS = ["method", "dataset", "split", "protocol", "seed", "version"] as const;
 export interface MetricObservation {
   sourceId: string;
   path: string;
@@ -58,11 +80,20 @@ export interface MetricObservation {
   seed?: string;
   protocol?: string;
   split?: string;
+  /** M17.2：行级子集（序列 / 片段，如 TrackEval 的 seq 列；COMBINED = 评测器汇总行） */
+  subset?: string;
+  version?: string;
   metric: string;
   value: number;
-  unit: "percentage" | "unknown";
+  unit: ExperimentUnit;
   direction: "higher" | "lower" | "unknown";
   groupId: string;
+  /** M17.2：原始单元格文本（保真：66.9% 与 0.669 的区别在此可查） */
+  rawText?: string;
+  /** M17.2：单位判定依据（显式证据类型；none = 未知） */
+  unitBasis?: UnitBasis;
+  /** M17.2：由作者文件 metadata 填补的上下文字段名 */
+  authorFilled?: string[];
 }
 export interface ExperimentGroup {
   id: string;
@@ -139,10 +170,42 @@ export interface ExperimentPackage {
   warnings: string[];
 }
 
+/** M17.2：写作上下文中的确定性对比（来自冻结快照；数值由 PaperTeam 复算，模型只能引用） */
+export interface WorkflowComparison {
+  comparisonId: string;
+  dataset: string;
+  split: string;
+  protocol: string;
+  subset: string;
+  metric: string;
+  kind: FactComparison["kind"];
+  /** 规范标度（比例统一为百分数、时间统一为秒）；canonicalValue 为该标度下的取值（ratio ×100 等确定性换算） */
+  canonicalUnit: ExperimentUnit;
+  subject: { method: string; role: string; value: number; canonicalValue: number; factId: string };
+  reference: { method: string; role: string; value: number; canonicalValue: number; factId: string };
+  absoluteDifference: string;
+  relativeChange: string | null;
+  outcome: FactComparison["outcome"];
+  limitations: string[];
+}
+export interface WorkflowSnapshotRef {
+  snapshotId: string;
+  version: number;
+  contentHash: string;
+  createdAt: string;
+  status: "valid" | "stale";
+  staleReasons?: string[];
+  factCount: number;
+  comparisonCount: number;
+}
 export interface ConfirmedExperimentWorkflowContext {
   schemaVersion: 1;
   status: "author_confirmed_not_externally_verified";
   truncated: boolean;
+  /** M17.2：存在冻结快照时的快照引用（无快照 = 缺省，行为与 M17.1 一致） */
+  snapshot?: WorkflowSnapshotRef;
+  /** M17.2：快照中的确定性对比（≤ 60 条）；stale 快照为空 */
+  comparisons?: WorkflowComparison[];
   observations: Array<{
     packageId: string;
     packageHash: string;
@@ -152,7 +215,7 @@ export interface ConfirmedExperimentWorkflowContext {
     path: string;
     metric: string;
     value: number;
-    unit: "percentage" | "unknown";
+    unit: ExperimentUnit;
     direction: "higher" | "lower" | "unknown";
     row?: number;
     sheet?: string;
@@ -169,7 +232,9 @@ export interface ConfirmedExperimentWorkflowContext {
 const RESULT_EXTENSIONS = new Set([".csv", ".xlsx", ".json", ".yaml", ".yml"]);
 const SOURCE_EXTENSIONS = new Set([".csv", ".xlsx", ".json", ".jsonl", ".ndjson", ".yaml", ".yml", ".md", ".txt", ".ipynb"]);
 const SECRET_PATTERN = /(api.?key|secret|password|token|credential|authorization)/i;
-const CONTEXT_COLUMNS = /^(method|model|dataset|seed|split|epoch|run|variant|protocol|step|iteration|fold|id)$/i;
+const CONTEXT_COLUMNS = /^(method|model|dataset|seed|split|epoch|run|variant|protocol|step|iteration|fold|id|seq|sequence|clip|scene|version)$/i;
+/** 单文件观测上限（M17.2：5000 → 20000，TrackEval detailed.csv 单臂即 ~7000 条；超限显式告警，不静默截断） */
+const MAX_FILE_OBSERVATIONS = 20_000;
 const MAX_WORKFLOW_OBSERVATIONS = 100;
 const SAFE_CONTEXT_LABEL = /^[\p{L}\p{N}][\p{L}\p{N} ._+:/%()\-]{0,95}$/u;
 const SECRET_VALUE_PATTERN = /(?:\bsk-[A-Za-z0-9_-]{12,}\b|\bgh[pousr]_[A-Za-z0-9]{20,}\b|\bAIza[A-Za-z0-9_-]{30,}\b|\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b)/;
@@ -329,43 +394,120 @@ function pushScaleConflictWarnings(item: ExperimentPackage): void {
   }
 }
 
-/** 指标名 → 标准方向（词表未收录返回 unknown——不猜）。leaf = 路径最后一段 */
+/**
+ * 指标名 → 标准方向（词表未收录返回 unknown——不猜）。leaf = 路径最后一段；
+ * M17.2：TrackEval detailed.csv 的 HOTA___AUC 即 HOTA（α 积分值），与 metricKey 同一归一规则
+ */
 function directionOf(metric: string): "higher" | "lower" | "unknown" {
-  const leaf = metric.split(/[./]/).pop() ?? metric;
+  const leaf = (metric.split(/[./]/).pop() ?? metric).replace(/___AUC$/i, "");
   return METRIC_DIRECTION.get(leaf.toUpperCase()) ?? "unknown";
 }
 
-function metricObservations(file: PackageFile, document: ParsedDocument): MetricObservation[] {
-  if (!["main_result", "baseline_result", "ablation_result"].includes(file.role)) return [];
+/** 行上下文 + 作者 metadata → 观测上下文字段（文件内显式值优先；矛盾登记为冲突，不覆盖） */
+function observationContext(file: PackageFile, context: Map<string, string>, conflicts: Set<string>): Partial<MetricObservation> {
+  const fromRow: Record<string, string | undefined> = {
+    method: context.get("method") ?? context.get("model"),
+    dataset: context.get("dataset"),
+    seed: context.get("seed"),
+    protocol: context.get("protocol"),
+    split: context.get("split"),
+    version: context.get("version"),
+  };
+  const result: Partial<MetricObservation> = {};
+  const authorFilled: string[] = [];
+  for (const field of FILE_METADATA_FIELDS) {
+    const rowValue = fromRow[field];
+    const authorValue = file.metadata?.[field];
+    if (rowValue !== undefined && rowValue !== "") {
+      result[field] = rowValue;
+      if (authorValue !== undefined && authorValue !== rowValue) conflicts.add(`${file.path} 的 ${field}：文件内为「${rowValue}」，作者 metadata 为「${authorValue}」`);
+    } else if (authorValue !== undefined && authorValue !== "") {
+      result[field] = authorValue;
+      authorFilled.push(field);
+    }
+  }
+  const subset = context.get("seq") ?? context.get("sequence") ?? context.get("clip") ?? context.get("scene");
+  if (subset !== undefined && subset !== "") result.subset = subset;
+  if (authorFilled.length > 0) result.authorFilled = authorFilled;
+  return result;
+}
+
+/** 表头单位 + 单元格显式单位 + 作者声明 → 最终单位（显式证据之间矛盾 → 冲突；作者只填补 unknown） */
+function resolveUnit(file: PackageFile, metric: string, cellUnit: ExperimentUnit, cellBasis: UnitBasis, header: { unit: ExperimentUnit; basis: UnitBasis }, conflicts: Set<string>): { unit: ExperimentUnit; basis: UnitBasis } {
+  let unit = cellUnit;
+  let basis = cellBasis;
+  if (header.unit !== "unknown") {
+    if (unit === "unknown") { unit = header.unit; basis = header.basis; }
+    else if (unit !== header.unit && !(unit === "ratio" && header.unit === "percentage" && cellBasis === "xlsx_percent_format")) {
+      conflicts.add(`${file.path} 指标 ${metric}：单元格单位 ${unit} 与表头单位 ${header.unit} 矛盾`);
+    }
+  }
+  const leaf = metric.split(/[./]/).pop() ?? metric;
+  // 逐指标声明与显式证据矛盾 → 冲突；"*" 只填补未知单位（不与显式单位比对）
+  const specific = file.metadata?.units?.[metric] ?? file.metadata?.units?.[leaf];
+  const declared = specific ?? file.metadata?.units?.["*"];
+  if (declared !== undefined && declared !== "unknown") {
+    if (unit === "unknown") { unit = declared; basis = "author_metadata"; }
+    else if (specific !== undefined && unit !== specific) {
+      conflicts.add(`${file.path} 指标 ${metric}：作者声明单位 ${specific} 与文件内显式单位 ${unit} 矛盾`);
+    }
+  }
+  return { unit, basis };
+}
+
+export interface MetricExtraction {
+  observations: MetricObservation[];
+  /** 不可当作事实的单元格（小数逗号 / 无缓存公式 / 合并从格）与截断——如实登记为告警 */
+  issues: string[];
+  /** 文件内显式值与作者 metadata / 单位矛盾 → 组冲突 */
+  conflicts: string[];
+}
+
+export function metricObservations(file: PackageFile, document: ParsedDocument): MetricExtraction {
+  const empty: MetricExtraction = { observations: [], issues: [], conflicts: [] };
+  if (!["main_result", "baseline_result", "ablation_result"].includes(file.role)) return empty;
   // JSONL 行流是逐事件/逐机会的特征记录（score、cosine、frame…），不是
   // 实验级指标表：即便作者把它标成结果角色，也不提取指标观测——它的
   // 首要用途是图表数据集（见 figures/datasets.ts），进 context 会以
   // 数千条特征值淹没真正的实验指标。
-  if (document.parser.id === "jsonl") return [];
+  if (document.parser.id === "jsonl") return empty;
   const observations: MetricObservation[] = [];
+  const issueCounts = new Map<string, { count: number; example: string }>();
+  const conflicts = new Set<string>();
+  let truncated = false;
+  const noteIssue = (kind: string, where: string) => {
+    const entry = issueCounts.get(kind) ?? { count: 0, example: where };
+    entry.count += 1;
+    issueCounts.set(kind, entry);
+  };
+  const push = (observation: MetricObservation): void => {
+    if (observations.length >= MAX_FILE_OBSERVATIONS) { truncated = true; return; }
+    observations.push(observation);
+  };
   for (const block of document.blocks) {
     if (block.type === "structured_record") {
       const record = block as ParsedRecordBlock;
-      const context = new Map(record.cells.map((cell) => [cell.header.toLowerCase(), cell.value]));
+      const context = new Map(record.cells.filter((cell) => CONTEXT_COLUMNS.test(cell.header)).map((cell) => [cell.header.toLowerCase(), cell.value]));
+      const ctx = observationContext(file, context, conflicts);
       for (const cell of record.cells) {
         if (CONTEXT_COLUMNS.test(cell.header) || SECRET_PATTERN.test(cell.header)) continue;
-        const numeric = cell.value.trim();
-        if (!/^[+-]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?$/i.test(numeric)) continue;
-        const value = Number(numeric);
-        if (!Number.isFinite(value) || observations.length >= 5000) continue;
-        const metric = cell.header.startsWith("$.") ? cell.header.replace(/^\$\./, "") : cell.header;
-        observations.push({
+        const where = `${block.provenance.sheet !== undefined ? `${block.provenance.sheet}!` : ""}${cell.letter ?? ""}${block.provenance.row ?? ""}${block.provenance.jsonPath ?? ""}`;
+        const parsed = parseMetricCell(cell.value, cell);
+        if (parsed.kind === "skip") continue;
+        if (parsed.kind === "issue") { noteIssue(parsed.issue, `${where}「${parsed.rawText}」`); continue; }
+        const rawMetric = cell.header.startsWith("$.") ? cell.header.replace(/^\$\./, "") : cell.header;
+        const header = headerUnit(rawMetric);
+        const metric = header.metric;
+        const { unit, basis } = resolveUnit(file, metric, parsed.unit, parsed.basis, header, conflicts);
+        push({
           sourceId: file.sourceId!, path: file.path, blockId: block.blockId,
           ...(block.provenance.row !== undefined ? { row: block.provenance.row } : {}),
           ...(block.provenance.sheet !== undefined ? { sheet: block.provenance.sheet } : {}),
           ...(cell.letter !== undefined ? { column: cell.letter } : {}),
           ...(block.provenance.jsonPath !== undefined ? { jsonPath: block.provenance.jsonPath } : {}),
-          ...(context.get("method") ?? context.get("model") ? { method: context.get("method") ?? context.get("model") } : {}),
-          ...(context.get("dataset") ? { dataset: context.get("dataset") } : {}),
-          ...(context.get("seed") ? { seed: context.get("seed") } : {}),
-          ...(context.get("protocol") ? { protocol: context.get("protocol") } : {}),
-          ...(context.get("split") ? { split: context.get("split") } : {}),
-          metric, value, unit: "unknown", direction: directionOf(metric), groupId: file.groupId,
+          ...ctx,
+          metric, value: parsed.value, unit, direction: directionOf(metric), groupId: file.groupId,
+          rawText: parsed.rawText, unitBasis: basis,
         });
       }
     } else if (block.type === "table") {
@@ -378,30 +520,36 @@ function metricObservations(file: PackageFile, document: ParsedDocument): Metric
         table.headers.forEach((header, index) => {
           if (CONTEXT_COLUMNS.test(header)) context.set(header.toLowerCase(), row[index] ?? "");
         });
+        const ctx = observationContext(file, context, conflicts);
         for (let index = 0; index < table.headers.length; index += 1) {
-          const header = table.headers[index]!;
-          if (CONTEXT_COLUMNS.test(header) || SECRET_PATTERN.test(header)) continue;
-          const numeric = (row[index] ?? "").trim();
-          if (!/^[+-]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?$/i.test(numeric)) continue;
-          const value = Number(numeric);
-          if (!Number.isFinite(value) || observations.length >= 5000) continue;
-          observations.push({
+          const rawHeader = table.headers[index]!;
+          if (CONTEXT_COLUMNS.test(rawHeader) || SECRET_PATTERN.test(rawHeader)) continue;
+          const parsed = parseMetricCell(row[index] ?? "");
+          if (parsed.kind === "skip") continue;
+          if (parsed.kind === "issue") { noteIssue(parsed.issue, `行 ${baseRow + 1 + rowIndex} 列 ${rawHeader}「${parsed.rawText}」`); continue; }
+          const header = headerUnit(rawHeader);
+          const { unit, basis } = resolveUnit(file, header.metric, parsed.unit, parsed.basis, header, conflicts);
+          push({
             sourceId: file.sourceId!, path: file.path, blockId: block.blockId,
             row: baseRow + 1 + rowIndex,
-            column: header,
+            column: rawHeader,
             ...(table.provenance.sheet !== undefined ? { sheet: table.provenance.sheet } : {}),
-            ...(context.get("method") ?? context.get("model") ? { method: context.get("method") ?? context.get("model") } : {}),
-            ...(context.get("dataset") ? { dataset: context.get("dataset") } : {}),
-            ...(context.get("seed") ? { seed: context.get("seed") } : {}),
-            ...(context.get("protocol") ? { protocol: context.get("protocol") } : {}),
-            ...(context.get("split") ? { split: context.get("split") } : {}),
-            metric: header, value, unit: "unknown", direction: directionOf(header), groupId: file.groupId,
+            ...ctx,
+            metric: header.metric, value: parsed.value, unit, direction: directionOf(header.metric), groupId: file.groupId,
+            rawText: parsed.rawText, unitBasis: basis,
           });
         }
       });
     }
   }
-  return observations;
+  const issueLabels: Record<string, string> = {
+    locale_decimal: "疑似小数逗号数值（未解析，不猜测）",
+    formula_no_cached_value: "公式无缓存计算结果（值未知，不执行公式）",
+    merged_copy: "合并单元格从格（复制自主格，不作为独立事实）",
+  };
+  const issues = [...issueCounts.entries()].map(([kind, entry]) => `${file.path}：${issueLabels[kind] ?? kind} ${entry.count} 处，例 ${entry.example}`);
+  if (truncated) issues.push(`${file.path}：指标观测超过单文件上限 ${MAX_FILE_OBSERVATIONS} 条，其余单元格未提取（不是全部数据）`);
+  return { observations, issues, conflicts: [...conflicts] };
 }
 
 /** workflowContext 代表性选择的内部候选：携带包上下文的原始观测（选择在原始数据上进行，输出时才做标签清洗） */
@@ -862,6 +1010,7 @@ export class ExperimentPackageService {
     const groups = new Map<string, ExperimentGroup>();
     item.observations = [];
     item.relationCandidates = [];
+    const extractionIssues: string[] = [];
     for (const file of item.files) {
       const role = file.groupId.startsWith("baseline") ? "baseline" : file.groupId.startsWith("ablation") ? "ablation" : file.groupId === "main" ? "main" : "other";
       const group = groups.get(file.groupId) ?? { id: file.groupId, role, filePaths: [], basis: "路径/文件名候选；共同数据集不证明协议一致", status: "candidate", conflicts: [] } satisfies ExperimentGroup;
@@ -872,7 +1021,10 @@ export class ExperimentPackageService {
         if (!source || source.contentHash !== file.hash) { group.conflicts.push(`来源 ${file.path} 已删除或内容变化`); continue; }
         const document = await this.documents.load(projectId, file.sourceId);
         if (document) {
-          item.observations.push(...metricObservations(file, document));
+          const extraction = metricObservations(file, document);
+          item.observations.push(...extraction.observations);
+          extractionIssues.push(...extraction.issues);
+          group.conflicts.push(...extraction.conflicts);
           collectReportedVerdicts(item, file, document);
         }
       }
@@ -917,6 +1069,7 @@ export class ExperimentPackageService {
     item.groups = [...groups.values()];
     item.warnings = item.files.filter((file) => file.parseStatus === "failed").map((file) => `${file.path}: 解析失败`);
     if (item.files.some((file) => file.groupId === "unresolved")) item.warnings.push("部分文件的实验分组未确定，需作者核对");
+    item.warnings.push(...extractionIssues);
     item.schemaVersion = 2;
     pushScaleConflictWarnings(item);
   }
@@ -927,6 +1080,47 @@ export class ExperimentPackageService {
       if (!file) throw new BusinessError("INVALID_REQUEST", "实验包内无此文件");
       if (!/^[a-zA-Z0-9_-]{1,64}$/.test(groupId)) throw new BusinessError("INVALID_REQUEST", "非法实验组 ID");
       file.role = role; file.roleBasis = "作者修改"; file.roleConfidence = "high"; file.groupId = groupId;
+      await this.rebuild(projectId, item);
+      await this.save(projectId, item);
+      return item;
+    });
+  }
+  /**
+   * M17.2 作者补充文件级 metadata（方法 / 数据集 / 划分 / 协议 / seed / 版本 / 指标单位）。
+   * 只填补文件内缺失字段，矛盾登记冲突；编辑会重建观测——与 editFile 相同，既有组 / 范围确认随重建失效，需作者重新核对。
+   * 传 null 的字段被清除。值经标签白名单校验（不接受控制字符 / 疑似密钥）。
+   */
+  async editFileMetadata(projectId: string, packageId: string, path: string, patch: Record<string, unknown>): Promise<ExperimentPackage> {
+    return this.enqueue(projectId, async () => {
+      const item = await this.get(projectId, packageId);
+      if (item.status === "inventory" || item.status === "importing") throw new BusinessError("INVALID_REQUEST", "实验包仍在解析中，暂不能编辑 metadata");
+      const file = item.files.find((entry) => entry.path === path);
+      if (!file) throw new BusinessError("INVALID_REQUEST", "实验包内无此文件");
+      const next: FileExperimentMetadata = { ...(file.metadata ?? {}) };
+      for (const field of [...FILE_METADATA_FIELDS, "note"] as const) {
+        if (!(field in patch)) continue;
+        const value = patch[field];
+        if (value === null || value === "") { delete next[field]; continue; }
+        const label = typeof value === "string" ? safeContextLabel(value) : undefined;
+        if (label === undefined) throw new BusinessError("INVALID_REQUEST", `metadata 字段 ${field} 不是合法标签：只允许文字、数字、空格与 . _ + : / % ( ) -，以文字或数字开头，最长 96 字符，且不能含疑似密钥`);
+        next[field] = label;
+      }
+      if ("units" in patch) {
+        const units = patch["units"];
+        if (units === null) delete next.units;
+        else {
+          if (typeof units !== "object" || Array.isArray(units)) throw new BusinessError("INVALID_REQUEST", "units 必须是 指标名 → 单位 的对象");
+          const parsed: Record<string, ExperimentUnit> = {};
+          for (const [metric, unit] of Object.entries(units as Record<string, unknown>)) {
+            if (!(metric === "*" || safeContextLabel(metric) === metric) || metric.length > 96) throw new BusinessError("INVALID_REQUEST", `非法指标名：${metric.slice(0, 40)}`);
+            if (typeof unit !== "string" || !(EXPERIMENT_UNITS as readonly string[]).includes(unit)) throw new BusinessError("INVALID_REQUEST", `非法单位：${String(unit).slice(0, 20)}（允许 ${EXPERIMENT_UNITS.join(" / ")}）`);
+            if (unit !== "unknown") parsed[metric] = unit as ExperimentUnit;
+          }
+          if (Object.keys(parsed).length > 200) throw new BusinessError("INVALID_REQUEST", "单位声明过多（上限 200）");
+          if (Object.keys(parsed).length > 0) next.units = parsed; else delete next.units;
+        }
+      }
+      if (Object.keys(next).length > 0) file.metadata = next; else delete file.metadata;
       await this.rebuild(projectId, item);
       await this.save(projectId, item);
       return item;
@@ -1410,11 +1604,13 @@ export class ExperimentPackageService {
   }
 
   async workflowContext(projectId: string, options: { anchorText?: string } = {}): Promise<ConfirmedExperimentWorkflowContext> {
-    const candidates = await this.eligibleWorkflowCandidates(projectId);
+    const snapshotState = await this.activeSnapshotState(projectId);
+    const candidates = await this.eligibleWorkflowCandidates(projectId, snapshotState);
     const selected = selectWorkflowObservations(candidates, options.anchorText !== undefined ? { anchorNumbers: manuscriptNumberAnchors(options.anchorText) } : {});
     return {
       schemaVersion: 1,
       status: "author_confirmed_not_externally_verified",
+      ...(snapshotState !== null ? { snapshot: snapshotRef(snapshotState), comparisons: snapshotState.status === "valid" ? workflowComparisons(snapshotState.snapshot) : [] } : {}),
       // truncated 只反映总量限制（有合格观测因预算未被选中）；未确认/不合格
       // 观测不进入候选，也不计入截断判断
       truncated: selected.length < candidates.length,
@@ -1450,12 +1646,22 @@ export class ExperimentPackageService {
   async manuscriptMatchedObservations(projectId: string, anchorText: string): Promise<MetricObservation[]> {
     const anchors = manuscriptNumberAnchors(anchorText);
     if (anchors.size === 0) return [];
-    return (await this.eligibleWorkflowCandidates(projectId))
+    return (await this.eligibleWorkflowCandidates(projectId, await this.activeSnapshotState(projectId)))
       .filter((candidate) => anchoredTokens(candidate.observation.value, anchors).length > 0)
       .map((candidate) => candidate.observation);
   }
 
-  private async eligibleWorkflowCandidates(projectId: string): Promise<WorkflowObservationCandidate[]> {
+  /**
+   * M17.2 单点切换：存在冻结快照时，工作流（Researcher / Outline / Writer / Revision / Reviewer 披露）只读快照事实；
+   * 快照失效（源变化 / 授权撤回 / metadata 变化）→ 空（不悄悄回落到实时数据，作者须重新冻结）。无快照 = 原实时口径。
+   */
+  private async eligibleWorkflowCandidates(projectId: string, snapshotState: ActiveSnapshotState | null): Promise<WorkflowObservationCandidate[]> {
+    if (snapshotState === null) return this.liveEligibleCandidates(projectId);
+    if (snapshotState.status === "stale") return [];
+    return snapshotState.snapshot.facts.map((fact) => ({ packageId: fact.packageId, packageHash: fact.packageHash, observation: fact }));
+  }
+
+  private async liveEligibleCandidates(projectId: string): Promise<WorkflowObservationCandidate[]> {
     const items = await this.list(projectId);
     // 资格边界与原先一致：作者确认组内的结果角色文件 + 存活 Source + ok/partial
     // 解析状态（JSONL 特征流在指标提取层就不产生观测）。合格观测先全量收集，
@@ -1492,4 +1698,262 @@ export class ExperimentPackageService {
     }
     return candidates;
   }
+
+  // ---------------------------------------------------------------------------
+  // M17.2 实验事实快照（预览 / 作者排除 / 冻结 / 失效）
+  // ---------------------------------------------------------------------------
+
+  private snapshotsDir(projectId: string): string { return join(this.root(projectId), "snapshots"); }
+
+  /** 快照输入：当前「已确认 + 已授权」范围内的结果角色文件观测（与 workflowContext 实时口径同一资格边界） */
+  private async snapshotInputs(projectId: string): Promise<SnapshotInputObservation[]> {
+    const items = await this.list(projectId);
+    const inputs: SnapshotInputObservation[] = [];
+    const byPackage = new Map(items.map((item) => [item.packageId, item]));
+    for (const candidate of await this.liveEligibleCandidates(projectId)) {
+      const item = byPackage.get(candidate.packageId)!;
+      const observation = candidate.observation;
+      const file = item.files.find((entry) => entry.path === observation.path && entry.sourceId === observation.sourceId);
+      const group = item.groups.find((entry) => entry.id === observation.groupId);
+      if (file === undefined || group === undefined) continue;
+      const scope = group.splitScopes?.find((entry) => entry.split === observationScopeKey(observation));
+      inputs.push({
+        ...observation,
+        packageId: item.packageId, packageHash: item.packageHash, fileHash: file.hash,
+        groupRole: group.role, scopeId: scope?.id ?? group.id,
+        ...(scope?.confirmedAt ?? group.confirmedAt ? { confirmedAt: scope?.confirmedAt ?? group.confirmedAt } : {}),
+      });
+    }
+    return inputs;
+  }
+
+  private async readFactDecisions(projectId: string): Promise<FactDecisionFile> {
+    try {
+      const parsed = JSON.parse(await readFile(join(this.snapshotsDir(projectId), "decisions.json"), "utf8")) as FactDecisionFile;
+      if (parsed.schema !== FACT_DECISIONS_SCHEMA || typeof parsed.excluded !== "object" || !Array.isArray(parsed.log)) throw new BusinessError("EXPERIMENT_MANIFEST_CORRUPTED", "实验事实决定文件损坏");
+      return parsed;
+    } catch (error) {
+      if ((error as { code?: string }).code === "ENOENT") return { schema: FACT_DECISIONS_SCHEMA, excluded: {}, log: [] };
+      if (error instanceof BusinessError) throw error;
+      throw new BusinessError("EXPERIMENT_MANIFEST_CORRUPTED", "实验事实决定文件损坏");
+    }
+  }
+
+  /** 预览（不落盘）：快照内容 + 冲突 + 对比 + 不可比 + 是否可冻结 */
+  async previewSnapshot(projectId: string): Promise<FactSnapshotBuild & { freezable: boolean; blockingReasons: string[] }> {
+    await this.projects.getRequired(projectId);
+    const decisions = await this.readFactDecisions(projectId);
+    const build = buildFactSnapshotContent(await this.snapshotInputs(projectId), new Map(Object.entries(decisions.excluded).map(([id, entry]) => [id, entry.reason])));
+    const blockingReasons = [
+      ...(build.facts.length === 0 ? ["没有可冻结的事实（需先确认并授权至少一个实验范围）"] : []),
+      ...build.conflicts.map((conflict) => `${conflict.code}：${conflict.detail}`),
+    ];
+    return { ...build, freezable: blockingReasons.length === 0, blockingReasons };
+  }
+
+  /**
+   * 作者排除 / 恢复事实（append-only 决定日志；原始文件与观测不变）。排除冲突的一方 = 选择另一方。
+   * 只接受当前输入中存在的 factId（防止为不存在的事实写决定）。
+   */
+  async decideFacts(projectId: string, decision: { exclude?: string[]; include?: string[]; reason?: string }): Promise<FactDecisionFile> {
+    return this.enqueue(projectId, async () => {
+      await this.projects.getRequired(projectId);
+      const known = new Set((await this.snapshotInputs(projectId)).map(factIdOf));
+      const decisions = await this.readFactDecisions(projectId);
+      const reason = (decision.reason ?? "").replace(/[\u0000-\u001f\u007f]/g, " ").trim().slice(0, 200) || "作者排除";
+      const at = new Date().toISOString();
+      const exclude = decision.exclude ?? [];
+      const include = decision.include ?? [];
+      if (exclude.length + include.length === 0 || exclude.length + include.length > 5000) throw new BusinessError("INVALID_REQUEST", "需要 1–5000 个 factId");
+      for (const factId of [...exclude, ...include]) {
+        if (typeof factId !== "string" || !/^f-[a-f0-9]{16}$/.test(factId)) throw new BusinessError("INVALID_REQUEST", "非法 factId");
+      }
+      for (const factId of exclude) {
+        if (!known.has(factId)) throw new BusinessError("INVALID_REQUEST", `事实 ${factId} 不在当前已确认范围内`);
+        decisions.excluded[factId] = { reason, at };
+        decisions.log.push({ action: "exclude", factId, reason, at, actor: "author" });
+      }
+      for (const factId of include) {
+        if (decisions.excluded[factId] === undefined) continue;
+        delete decisions.excluded[factId];
+        decisions.log.push({ action: "include", factId, reason, at, actor: "author" });
+      }
+      await mkdir(this.snapshotsDir(projectId), { recursive: true });
+      await writeJsonAtomic(join(this.snapshotsDir(projectId), "decisions.json"), decisions);
+      return decisions;
+    });
+  }
+
+  /** 冻结：无阻断冲突且至少一条事实 → 新版本快照（不可变文件）并设为当前；冲突未裁决 → 409 */
+  async freezeSnapshot(projectId: string, note?: string): Promise<FactSnapshot> {
+    return this.enqueue(projectId, async () => {
+      const preview = await this.previewSnapshot(projectId);
+      if (preview.facts.length === 0) throw new BusinessError("EXPERIMENT_SNAPSHOT_EMPTY", "没有可冻结的实验事实：请先确认并授权至少一个实验范围");
+      if (preview.conflicts.length > 0) {
+        throw new BusinessError("EXPERIMENT_FACT_CONFLICT", `存在 ${preview.conflicts.length} 处未裁决的实验事实冲突，不能冻结：${preview.conflicts.slice(0, 3).map((conflict) => conflict.code).join("、")}`);
+      }
+      const { freezable: _freezable, blockingReasons: _blocking, ...build } = preview;
+      const existing = await this.listSnapshotIds(projectId);
+      const version = existing.length + 1;
+      const snapshot: FactSnapshot = {
+        schema: FACT_SNAPSHOT_SCHEMA,
+        snapshotId: `efs-${String(version).padStart(4, "0")}`,
+        version,
+        createdAt: new Date().toISOString(),
+        createdBy: "author",
+        basedOn: [...new Map(build.facts.map((fact) => [fact.packageId, { packageId: fact.packageId, packageHash: fact.packageHash }])).values()],
+        contentHash: snapshotContentHash(build),
+        ...(note !== undefined && note.trim() !== "" ? { note: note.replace(/[\u0000-\u001f\u007f]/g, " ").trim().slice(0, 300) } : {}),
+        ...build,
+      };
+      await mkdir(this.snapshotsDir(projectId), { recursive: true });
+      await writeJsonAtomic(join(this.snapshotsDir(projectId), `${snapshot.snapshotId}.json`), snapshot);
+      await writeJsonAtomic(join(this.snapshotsDir(projectId), "active.json"), { snapshotId: snapshot.snapshotId, contentHash: snapshot.contentHash, activatedAt: snapshot.createdAt });
+      return snapshot;
+    });
+  }
+
+  private async listSnapshotIds(projectId: string): Promise<string[]> {
+    try { return (await readdir(this.snapshotsDir(projectId))).filter((name) => /^efs-\d{4}\.json$/.test(name)).map((name) => name.slice(0, -5)).sort(); }
+    catch (error) { if ((error as { code?: string }).code === "ENOENT") return []; throw error; }
+  }
+
+  async getSnapshot(projectId: string, snapshotId: string): Promise<FactSnapshot> {
+    await this.projects.getRequired(projectId);
+    if (!/^efs-\d{4}$/.test(snapshotId)) throw new NotFoundError("实验事实快照", snapshotId);
+    try {
+      const snapshot = JSON.parse(await readFile(join(this.snapshotsDir(projectId), `${snapshotId}.json`), "utf8")) as FactSnapshot;
+      if (snapshot.schema !== FACT_SNAPSHOT_SCHEMA || snapshotContentHash(snapshot) !== snapshot.contentHash) throw new BusinessError("EXPERIMENT_MANIFEST_CORRUPTED", `实验事实快照 ${snapshotId} 内容与哈希不符（文件被改动或损坏）`);
+      return snapshot;
+    } catch (error) {
+      if ((error as { code?: string }).code === "ENOENT") throw new NotFoundError("实验事实快照", snapshotId);
+      throw error;
+    }
+  }
+
+  async listSnapshots(projectId: string): Promise<Array<Pick<FactSnapshot, "snapshotId" | "version" | "createdAt" | "contentHash"> & { factCount: number; comparisonCount: number; active: boolean }>> {
+    const active = await this.readActivePointer(projectId);
+    const result = [];
+    for (const id of await this.listSnapshotIds(projectId)) {
+      const snapshot = await this.getSnapshot(projectId, id);
+      result.push({ snapshotId: snapshot.snapshotId, version: snapshot.version, createdAt: snapshot.createdAt, contentHash: snapshot.contentHash, factCount: snapshot.facts.length, comparisonCount: snapshot.comparisons.length, active: active?.snapshotId === id });
+    }
+    return result.reverse();
+  }
+
+  private async readActivePointer(projectId: string): Promise<{ snapshotId: string; contentHash: string } | null> {
+    try {
+      const pointer = JSON.parse(await readFile(join(this.snapshotsDir(projectId), "active.json"), "utf8")) as { snapshotId?: unknown; contentHash?: unknown };
+      return typeof pointer.snapshotId === "string" && typeof pointer.contentHash === "string" ? { snapshotId: pointer.snapshotId, contentHash: pointer.contentHash } : null;
+    } catch (error) {
+      if ((error as { code?: string }).code === "ENOENT") return null;
+      throw error;
+    }
+  }
+
+  /**
+   * 当前快照 + 有效性：快照中每条事实必须仍在「已确认 + 已授权」范围内、源文件哈希不变、metadata / 单位 / 值不变；
+   * 否则 stale（列出原因）。fail-closed：快照文件损坏 / 指针哈希不符同样 stale，不回落到实时数据。
+   */
+  async activeSnapshotState(projectId: string): Promise<ActiveSnapshotState | null> {
+    const pointer = await this.readActivePointer(projectId);
+    if (pointer === null) return null;
+    let snapshot: FactSnapshot;
+    try {
+      snapshot = await this.getSnapshot(projectId, pointer.snapshotId);
+    } catch (error) {
+      return { status: "stale", snapshot: emptySnapshot(pointer.snapshotId), staleReasons: [`快照文件不可用：${error instanceof Error ? error.message.slice(0, 120) : "未知错误"}`] };
+    }
+    if (snapshot.contentHash !== pointer.contentHash) return { status: "stale", snapshot, staleReasons: ["当前快照指针与快照内容哈希不符"] };
+    const signature = (fact: SnapshotInputObservation) => JSON.stringify([fact.fileHash, fact.value, fact.unit, fact.method ?? "", fact.dataset ?? "", fact.split ?? "", fact.protocol ?? "", fact.seed ?? "", fact.subset ?? "", fact.version ?? "", fact.groupRole]);
+    const live = new Map((await this.snapshotInputs(projectId)).map((input) => [factIdOf(input), signature(input)]));
+    const reasons: string[] = [];
+    const missing = snapshot.facts.filter((fact) => !live.has(fact.factId));
+    const changed = snapshot.facts.filter((fact) => live.has(fact.factId) && live.get(fact.factId) !== signature(fact));
+    if (missing.length > 0) reasons.push(`${missing.length} 条快照事实已不在已确认 + 已授权范围内（范围撤回 / 重新整理分组 / 来源删除），例 ${missing[0]!.sourceLocator}`);
+    if (changed.length > 0) reasons.push(`${changed.length} 条快照事实的来源哈希、取值、单位或 metadata 已变化，例 ${changed[0]!.sourceLocator}`);
+    for (const sourceId of [...new Set(snapshot.facts.map((fact) => fact.sourceId))]) {
+      const fact = snapshot.facts.find((entry) => entry.sourceId === sourceId)!;
+      const source = await this.sources.get(projectId, sourceId);
+      if (source === null || source === undefined || source.contentHash !== fact.fileHash) reasons.push(`源文件 ${fact.path}（sha256 ${fact.fileHash.slice(0, 12)}）已删除或内容变化`);
+    }
+    return reasons.length > 0 ? { status: "stale", snapshot, staleReasons: reasons } : { status: "valid", snapshot };
+  }
+
+}
+
+const FACT_DECISIONS_SCHEMA = "paperteam.experiment-fact-decisions/v1";
+export interface FactDecisionFile {
+  schema: typeof FACT_DECISIONS_SCHEMA;
+  excluded: Record<string, { reason: string; at: string }>;
+  log: Array<{ action: "exclude" | "include"; factId: string; reason: string; at: string; actor: "author" }>;
+}
+
+export type ActiveSnapshotState =
+  | { status: "valid"; snapshot: FactSnapshot }
+  | { status: "stale"; snapshot: FactSnapshot; staleReasons: string[] };
+
+function emptySnapshot(snapshotId: string): FactSnapshot {
+  return {
+    schema: FACT_SNAPSHOT_SCHEMA, snapshotId, version: 0, createdAt: "", createdBy: "author", basedOn: [], contentHash: "",
+    facts: [], excluded: [], conflicts: [], comparisons: [], notComparable: [], seedAggregates: [], statisticalTests: [], limitations: [],
+  };
+}
+
+function snapshotRef(state: ActiveSnapshotState): WorkflowSnapshotRef {
+  return {
+    snapshotId: state.snapshot.snapshotId, version: state.snapshot.version, contentHash: state.snapshot.contentHash, createdAt: state.snapshot.createdAt,
+    status: state.status, ...(state.status === "stale" ? { staleReasons: state.staleReasons } : {}),
+    factCount: state.snapshot.facts.length, comparisonCount: state.snapshot.comparisons.length,
+  };
+}
+
+const MAX_WORKFLOW_COMPARISONS = 60;
+
+function canonicalOf(snapshot: FactSnapshot, factId: string, value: number): number {
+  const fact = snapshot.facts.find((entry) => entry.factId === factId);
+  return fact !== undefined ? toCanonical(fact.value, fact.unit)?.value ?? value : value;
+}
+
+/**
+ * 写作上下文的对比选择（确定性）：整体结果（无子集）优先；主指标（非 TrackEval 逐阈值分量 *___<α>）优先；
+ * 方向已知优先；对基线优先于消融；按指标 / 方法码位序
+ */
+export function workflowComparisons(snapshot: FactSnapshot): WorkflowComparison[] {
+  const rank = (comparison: FactComparison) => [
+    comparison.context.subset === "" || /^(combined|all|overall|total|pooled)$/i.test(comparison.context.subset) ? 0 : 1,
+    /___\d+$/.test(comparison.context.metricKey) ? 1 : 0,
+    comparison.direction === "unknown" ? 1 : 0,
+    comparison.kind === "vs_baseline" ? 0 : 1,
+  ];
+  const ordered = [...snapshot.comparisons].sort((a, b) => {
+    const [ra, rb] = [rank(a), rank(b)];
+    for (let i = 0; i < ra.length; i += 1) if (ra[i] !== rb[i]) return ra[i]! - rb[i]!;
+    const ka = [a.context.dataset, a.context.metricKey, a.subject.method, a.reference.method].join("\u0000");
+    const kb = [b.context.dataset, b.context.metricKey, b.subject.method, b.reference.method].join("\u0000");
+    return compareCodepoints(ka, kb);
+  });
+  // 类别配额：消融对主方法至少 16 条、其余给对基线，任一类不足时余量给另一类（消融结论同样需要可引用的确定性差值）
+  const vsBaseline = ordered.filter((comparison) => comparison.kind === "vs_baseline");
+  const ablation = ordered.filter((comparison) => comparison.kind === "ablation_vs_main");
+  const ablationTake = Math.min(ablation.length, Math.max(16, MAX_WORKFLOW_COMPARISONS - vsBaseline.length));
+  const chosen = new Set([...ablation.slice(0, ablationTake), ...vsBaseline.slice(0, MAX_WORKFLOW_COMPARISONS - ablationTake)]);
+  return ordered
+    .filter((comparison) => chosen.has(comparison))
+    .map((comparison) => ({
+      comparisonId: comparison.comparisonId,
+      dataset: safeContextLabel(comparison.context.dataset) ?? "[omitted]",
+      split: safeContextLabel(comparison.context.split) ?? "",
+      protocol: safeContextLabel(comparison.context.protocol) ?? "[omitted]",
+      subset: safeContextLabel(comparison.context.subset) ?? "",
+      metric: comparison.context.metricKey,
+      kind: comparison.kind,
+      canonicalUnit: comparison.canonicalUnit,
+      subject: { method: safeContextLabel(comparison.subject.method) ?? "[omitted]", role: comparison.subject.role, value: comparison.subject.value, canonicalValue: canonicalOf(snapshot, comparison.subject.factId, comparison.subject.value), factId: comparison.subject.factId },
+      reference: { method: safeContextLabel(comparison.reference.method) ?? "[omitted]", role: comparison.reference.role, value: comparison.reference.value, canonicalValue: canonicalOf(snapshot, comparison.reference.factId, comparison.reference.value), factId: comparison.reference.factId },
+      absoluteDifference: formatDerived(comparison.absoluteDifference),
+      relativeChange: comparison.relativeChange !== null ? formatDerived(comparison.relativeChange) : null,
+      outcome: comparison.outcome,
+      limitations: comparison.limitations,
+    }));
 }
