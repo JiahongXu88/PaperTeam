@@ -271,7 +271,7 @@ import {
   type ClaimRepairDirective,
 } from "../review/claimGrounding.js";
 import { auditExperimentFacts } from "../review/experimentFactAudit.js";
-import { mentionedMetrics, renderSnapshotResultsTable, selectResultsSection } from "../experiments/resultsTable.js";
+import { appendResultsTable, mentionedMetrics, renderSnapshotResultsTable, selectResultsSection } from "../experiments/resultsTable.js";
 import type { ReviewArtifactStore } from "../review/reviewArtifacts.js";
 import { buildRevisionPlan, dispatchableRevisionItems, findingFingerprint, type RevisionPlan, type RevisionPlanItem } from "../review/revisionPlan.js";
 import { adaptLineEndingsToSpan, alignProposalToSpan, applyRevisionSpan, checkMultiRangeScope, checkGlobalRevisionScope, checkRevisionScope, describeScopeViolation, hasNewContentAfterDocumentEnd, isWholeQuoteDeletion, hasRevisionWorkspaceMutation, locateLatexSections, revisionSourceHash, revisionSpansOverlap, verifyNoopCoverage, type RevisionSpan } from "../review/revisionScope.js";
@@ -1552,9 +1552,14 @@ function reviewRunStageInner(
       // Round 2：作者授权进入工作流的实验观测值——数值全部被覆盖的 UNSUPPORTED claim
       // 披露为 author_experiment_data（Writer / Revision 据同一表写数值，Reviewer 没有
       // 外部文献可核；不计入凭空断言阻断，也不派发「数值删除」修订）
+      // M17.2：有冻结快照时，披露集合 = 快照整体事实 + 确定性对比差值（不再受 100 条上下文预算限制；派生量的正确性另由
+      // experiment-fact-audit 核对）；无快照沿用原口径
+      const snapshotDisclosure = isSurveyKind(ctx.state.workflowKind) ? null : await services.experimentPackages.snapshotDisclosureValues(ctx.projectId);
       const authorizedObservations = isSurveyKind(ctx.state.workflowKind)
         ? []
-        : [
+        : snapshotDisclosure !== null
+          ? [...snapshotDisclosure, ...researchFactsAsAuthorizedObservations(thesisConfirmedFacts)]
+          : [
             // M14.8-MOT：existing-paper 用「稿件正文数值命中的全部授权观测」（确定性披露，
             // 不进 prompt，不受 100 条上下文预算限制）；其余工作流沿用上下文选择
             ...(options.existingPaper === true
@@ -8392,7 +8397,8 @@ function writingSectionsStage(services: WorkflowServices): StageSpec {
           ? { inserted: false, reason: snapshotTable.reason }
           : tableSection === null
             ? { inserted: false, reason: "大纲中没有实验 / 结果章节" }
-            : { inserted: true, label: snapshotTable.table.label, sectionId: tableSection.id, metrics: snapshotTable.table.metrics, rows: snapshotTable.table.rowCount };
+            // 以实际追加为准：写到目标节时才置 inserted=true（M17.2 真实运行曾在未追加时记录 inserted=true）
+            : { inserted: false, reason: "目标结果节未写出", label: snapshotTable.table.label, sectionId: tableSection.id, metrics: snapshotTable.table.metrics, rows: snapshotTable.table.rowCount };
       if (resultsTableDecision !== undefined) {
         ctx.log(`[writing] 实验结果表：${resultsTableDecision.inserted ? `确定性附于 ${tableSection!.id}（${snapshotTable!.table!.label}）` : `不生成（${resultsTableDecision.reason}）`}`);
       }
@@ -8439,14 +8445,17 @@ function writingSectionsStage(services: WorkflowServices): StageSpec {
           }
           throw error;
         }
-        if (tableSection !== null && tableSection.id === section.id && snapshotTable?.table != null && !result.latex.includes(snapshotTable.table.label)) {
+        if (tableSection !== null && tableSection.id === section.id && snapshotTable?.table != null) {
           // 列优先取本节及此前各节正文实际提及的指标（表与正文一致；仍是快照数值的确定性抄录）
           const written = [...writtenLatex.map((entry) => entry.latex), result.latex].join("\n");
           const metricsInText = mentionedMetrics(written, [...new Set((experimentContext.comparisons ?? []).map((comparison) => comparison.metric))]);
           const table = renderSnapshotResultsTable(experimentContext, { ...(language !== undefined ? { language } : {}), preferMetrics: metricsInText });
-          if (table.table !== null) {
-            result = { ...result, latex: `${result.latex.trimEnd()}\n\n${table.table.latex}\n` };
-            if (resultsTableDecision?.inserted === true) resultsTableDecision.metrics = table.table.metrics;
+          const appended = table.table !== null ? appendResultsTable(result.latex, table.table) : null;
+          if (appended?.appended === true && table.table !== null) {
+            result = { ...result, latex: appended.latex };
+            if (resultsTableDecision !== undefined) Object.assign(resultsTableDecision, { inserted: true, reason: undefined, metrics: table.table.metrics, rows: table.table.rowCount });
+          } else if (appended !== null && resultsTableDecision !== undefined) {
+            Object.assign(resultsTableDecision, { reason: "Writer 已自行写出同 label 的表（未重复追加）" });
           }
         }
         bytesTotal += await services.manuscript.writeSection(ctx.projectId, section, result.latex);

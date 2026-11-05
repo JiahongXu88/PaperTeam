@@ -102,6 +102,11 @@ describe("M17.2 experiment fact snapshot over HTTP", () => {
     expect(writerText).toContain("+2.580 个百分点（pp）");
     expect(writerText).toContain("+5.46%（相对变化）");
 
+    // 审稿「作者实验数据」披露：快照整体事实 + 确定性差值（M17.2 真实运行：沿用 100 条上下文时与快照一致的结论被记为 opaque）
+    const disclosure = (await stack.stack.experimentPackages.snapshotDisclosureValues(projectId))!;
+    const has = (value: number) => disclosure.some((entry) => Math.abs(entry.value - value) < 1e-9);
+    expect(has(47.250) && has(49.830) && has(2.58) && has(5.46) && has(42)).toBe(true);
+
     // Reviewer 核查：错误的 % 幅度被拦截，并能反查到源文件哈希定位
     const state = await stack.stack.experimentPackages.activeSnapshotState(projectId);
     expect(state?.status).toBe("valid");
@@ -135,6 +140,7 @@ describe("M17.2 experiment fact snapshot over HTTP", () => {
     expect(staleContext.observations).toEqual([]);
     expect(staleContext.snapshot?.status).toBe("stale");
     expect(renderExperimentContextLines(staleContext).join("\n")).toContain("已失效");
+    expect(await stack.stack.experimentPackages.snapshotDisclosureValues(projectId)).toEqual([]);
 
     // 重新授权 → 重新冻结 efs-0002；efs-0001 内容与哈希不变（历史版本不被静默改写）
     await stack.request("POST", `${api}/${first.packageId}/workflow-use`, { scopeId: baselineScope, use: "allowed" });

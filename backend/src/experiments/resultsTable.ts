@@ -8,7 +8,7 @@
 import { escapeLatex } from "../figures/latexEscape.js";
 import type { ConfirmedExperimentWorkflowContext, WorkflowComparison } from "./ExperimentPackageService.js";
 
-const MAX_METRICS = 6;
+const MAX_METRICS = 5;
 const MAX_ROWS = 24;
 const RESULTS_SECTION = /result|结果/i;
 const EXPERIMENT_SECTION = /experiment|evaluation|实验|评估|评测/i;
@@ -23,6 +23,15 @@ export interface SnapshotResultsTable {
 
 export function snapshotTableLabel(snapshotId: string): string {
   return `tab:exp-${snapshotId}`;
+}
+
+/**
+ * 把确定性结果表追加到节末：只有该节已含同名 \label（Writer 自己写了这张表）才跳过；正文中的 Table~\ref{…} 引用不算
+ * （M17.2 真实运行：按 label 子串判断时引用命中，表被跳过，稿件留下悬空引用）。
+ */
+export function appendResultsTable(sectionLatex: string, table: Pick<SnapshotResultsTable, "label" | "latex">): { latex: string; appended: boolean } {
+  if (sectionLatex.includes(`\\label{${table.label}}`)) return { latex: sectionLatex, appended: false };
+  return { latex: `${sectionLatex.trimEnd()}\n\n${table.latex}\n`, appended: true };
 }
 
 /** 在大纲中选择附表的章节：先找标题 / id 含 result / 结果，其次 experiment / 实验；都没有 → null（无表决定） */
@@ -68,9 +77,9 @@ export function renderSnapshotResultsTable(
   const comparisons = context.comparisons ?? [];
   if (comparisons.length === 0) return { table: null, reason: "快照中没有确定性对比（协议 / 单位 / 基线不明），只允许正文报告原始数值" };
   // 指标：按对比数降序、名称码位序；每个指标的单位取首个对比的规范单位
-  const metricCounts = new Map<string, { count: number; unit: WorkflowComparison["canonicalUnit"]; direction: string }>();
+  const metricCounts = new Map<string, { count: number; unit: WorkflowComparison["canonicalUnit"]; direction: string; label: string }>();
   for (const comparison of comparisons) {
-    const entry = metricCounts.get(comparison.metric) ?? { count: 0, unit: comparison.canonicalUnit, direction: "" };
+    const entry = metricCounts.get(comparison.metric) ?? { count: 0, unit: comparison.canonicalUnit, direction: "", label: comparison.metricLabel ?? comparison.metric };
     entry.count += 1;
     metricCounts.set(comparison.metric, entry);
   }
@@ -96,15 +105,17 @@ export function renderSnapshotResultsTable(
   const datasets = new Set(ordered.map((row) => row.dataset));
   const english = options.language === "en";
   const label = snapshotTableLabel(snapshot.snapshotId);
-  const header = [english ? "Dataset" : "数据集", english ? "Method" : "方法", ...metrics.map((metric) => `${escapeLatex(metric)}${unitHeader(metricCounts.get(metric)!.unit)}`)];
+  // 单一数据集：省去数据集列（写入题注），减少列宽；多数据集保留，并在表注说明跨数据集不可比
+  const singleDataset = datasets.size === 1 ? [...datasets][0]! : null;
+  const header = [...(singleDataset === null ? [english ? "Dataset" : "数据集"] : []), english ? "Method" : "方法", ...metrics.map((metric) => `${escapeLatex(metricCounts.get(metric)!.label)}${unitHeader(metricCounts.get(metric)!.unit)}`)];
   const body = ordered.map((row) => [
-    escapeLatex(row.dataset), `${escapeLatex(row.method)}${row.role === "baseline" ? (english ? " (baseline)" : "（基线）") : row.role === "ablation" ? (english ? " (ablation)" : "（消融）") : ""}`,
+    ...(singleDataset === null ? [escapeLatex(row.dataset)] : []), `${escapeLatex(row.method)}${row.role === "baseline" ? (english ? " (baseline)" : "（基线）") : row.role === "ablation" ? (english ? " (ablation)" : "（消融）") : ""}`,
     ...metrics.map((metric) => row.values.has(metric) ? formatValue(row.values.get(metric)!) : "--"),
   ].join(" & ") + " \\\\");
   const sourceFiles = [...new Set(context.observations.map((observation) => observation.path))].sort();
   const caption = english
-    ? `Experimental results from author-confirmed fact snapshot ${snapshot.snapshotId} (content hash ${snapshot.contentHash.slice(0, 12)}); proportions are shown on a percentage scale; single deterministic runs without statistical tests.`
-    : `实验结果（来自作者确认的实验事实快照 ${snapshot.snapshotId}，内容哈希 ${snapshot.contentHash.slice(0, 12)}；比例统一按百分数标度；单次确定性运行，无统计检验）`;
+    ? `Experimental results${singleDataset !== null ? ` on ${singleDataset}` : ""} from author-confirmed fact snapshot ${snapshot.snapshotId} (content hash ${snapshot.contentHash.slice(0, 12)}); proportions are shown on a percentage scale; single deterministic runs without statistical tests.`
+    : `${singleDataset !== null ? `${singleDataset} 上的` : ""}实验结果（来自作者确认的实验事实快照 ${snapshot.snapshotId}，内容哈希 ${snapshot.contentHash.slice(0, 12)}；比例统一按百分数标度；单次确定性运行，无统计检验）`;
   const note = english
     ? `Values are copied deterministically from the snapshot; differences in the text are recomputed from the same facts.`
     : `表中数值由系统从快照确定性抄录；正文中的差值由同一事实复算。`;
@@ -112,9 +123,12 @@ export function renderSnapshotResultsTable(
     `% PaperTeam M17.2 deterministic results table — snapshot ${snapshot.snapshotId} ${snapshot.contentHash}; do not edit numbers by hand`,
     "\\begin{table}[htbp]",
     "  \\centering",
+    // 指标列 + 标签列在单栏版心内易溢出（M17.2 真实重放 PDF 目检）：统一小字号、收窄列距、最多 5 个指标列
+    "  \\small",
+    "  \\setlength{\\tabcolsep}{4pt}",
     `  \\caption{${escapeLatex(caption)}}`,
     `  \\label{${label}}`,
-    `  \\begin{tabular}{${"l".repeat(2)}${"r".repeat(metrics.length)}}`,
+    `  \\begin{tabular}{${"l".repeat(singleDataset === null ? 2 : 1)}${"r".repeat(metrics.length)}}`,
     "    \\hline",
     `    ${header.join(" & ")} \\\\`,
     "    \\hline",

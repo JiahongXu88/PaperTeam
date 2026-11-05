@@ -51,6 +51,8 @@ export interface ExperimentFactAuditResult {
   snapshotStatus: "valid" | "stale";
   checkedClaims: number;
   consistent: Array<{ file: string; line: number; quote: string; metric: string; claimedValue: number; claimedKind: "pp" | "percent"; comparisonId: string; operandLocators: string[] }>;
+  /** 无法归属到具体指标且与任何对比都不一致的幅度（不出 finding：宁可漏报不误报；供人工复核） */
+  unbound: Array<{ file: string; line: number; quote: string; claimedValue: number; claimedKind: "pp" | "percent" }>;
   findings: ExperimentFactAuditFinding[];
 }
 
@@ -121,7 +123,7 @@ export function auditExperimentFacts(
 ): ExperimentFactAuditResult {
   const result: ExperimentFactAuditResult = {
     schema: EXPERIMENT_FACT_AUDIT_SCHEMA, snapshotId: snapshot.snapshotId, snapshotContentHash: snapshot.contentHash, snapshotStatus: status,
-    checkedClaims: 0, consistent: [], findings: [],
+    checkedClaims: 0, consistent: [], unbound: [], findings: [],
   };
   if (status === "stale") {
     result.findings.push({
@@ -142,8 +144,9 @@ export function auditExperimentFacts(
     for (const sentence of sentencesOf(file, content)) {
       const plain = sentence.plain;
       const mentioned = metricRegexes.filter(([, regex]) => regex.test(plain)).map(([key]) => key);
-      const lowered = plain.toLowerCase();
-      const methodsMentioned = methodLabels.filter((label) => lowered.includes(label.toLowerCase()));
+      // 方法名比较忽略下划线（LaTeX 里 ma\\_x 与未转义的 ma_x 经纯文本化后写法不同）
+      const lowered = plain.toLowerCase().replace(/_/g, "");
+      const methodsMentioned = methodLabels.filter((label) => lowered.includes(label.toLowerCase().replace(/_/g, "")));
       const datasetsMentioned = datasetLabels.filter((label) => lowered.includes(label.toLowerCase()));
       const experimental = mentioned.length > 0 || methodsMentioned.length > 0;
       const line = lineOf(sentence.content, sentence.start + (sentence.raw.length - sentence.raw.trimStart().length));
@@ -170,9 +173,10 @@ export function auditExperimentFacts(
         claims.push({ value: Number(match[1]!.replace("−", "-")), raw: match[1]!, kind: "percent", index });
       }
       for (const claim of claims) {
-        // 指标归属：数字之前最近提到的指标；没有则句内第一个
+        // 指标归属：数字之前最近提到的指标；数字之前没有任何快照指标名（如「身份切换次数 … 相对减少 x%」）时不猜归属——
+        // 与快照全部对比核对：一致即记一致，否则记 unbound 不出 finding（M17.2 真实运行：退化归属曾把 IDSW 的 x% 误判到同句后文的 AssA）
         const before = plain.slice(0, claim.index);
-        const metric = mentioned
+        const located = mentioned
           .map((key) => {
             const regex = metricPattern(key);
             let last = -1;
@@ -184,11 +188,25 @@ export function auditExperimentFacts(
             }
             return { key, last };
           })
-          .sort((a, b) => b.last - a.last)[0]!.key;
+          .sort((a, b) => b.last - a.last);
+        const attributed = located[0]!.last >= 0;
+        const metric = attributed ? located[0]!.key : "(未归属)";
         result.checkedClaims += 1;
+        if (!attributed) {
+          const claimedAny = absInterval(displayInterval(Math.abs(claim.value), decimalsOf(claim.raw)));
+          const hit = snapshot.comparisons.find((comparison) => claim.kind === "pp"
+            ? comparison.absoluteDifference.unitLabel === "pp" && overlaps(claimedAny, absInterval(comparison.absoluteDifference.interval))
+            : comparison.relativeChange !== null && overlaps(claimedAny, absInterval(comparison.relativeChange.interval)));
+          if (hit !== undefined) result.consistent.push({ file, line, quote, metric: hit.context.metricKey, claimedValue: claim.value, claimedKind: claim.kind, comparisonId: hit.comparisonId, operandLocators: locators(hit) });
+          else result.unbound.push({ file, line, quote, claimedValue: claim.value, claimedKind: claim.kind });
+          continue;
+        }
         let candidates = snapshot.comparisons.filter((comparison) => comparison.context.metricKey === metric);
+        // 句中提到 ≥2 个方法时要求对比双方都被提及（「A 比 base …」不应绑定到 B 对 base；M17.2 真实数据负例重放）
+        const named = (method: string) => methodsMentioned.some((label) => method.toLowerCase().replace(/_/g, "") === label.toLowerCase().replace(/_/g, ""));
         const narrowed = candidates.filter((comparison) =>
-          (methodsMentioned.length === 0 || methodsMentioned.some((label) => [comparison.subject.method, comparison.reference.method].some((method) => method.toLowerCase() === label.toLowerCase()))) &&
+          (methodsMentioned.length === 0 ||
+            (methodsMentioned.length >= 2 ? named(comparison.subject.method) && named(comparison.reference.method) : named(comparison.subject.method) || named(comparison.reference.method))) &&
           (datasetsMentioned.length === 0 || datasetsMentioned.some((label) => comparison.context.dataset.toLowerCase() === label.toLowerCase())));
         if (narrowed.length > 0) candidates = narrowed;
         if (candidates.length === 0) {

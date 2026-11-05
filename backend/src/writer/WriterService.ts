@@ -2137,7 +2137,7 @@ function renderSnapshotContextLines(context: ConfirmedExperimentWorkflowContext,
   const comparisons = (context.comparisons ?? []).map((comparison) => {
     const where = [comparison.dataset, comparison.split, comparison.protocol, comparison.subset].filter((part) => part !== "").join(" / ");
     const outcome = comparison.outcome === "subject_better" ? "前者更优" : comparison.outcome === "reference_better" ? "后者更优" : comparison.outcome === "tie_within_rounding" ? "差异在舍入精度内（不得写成提升或下降）" : "方向未知（只报告差值）";
-    return `- ${comparison.comparisonId} [${where}] ${comparison.metric}：${comparison.subject.method}（${comparison.subject.role}）${comparison.subject.value} 对 ${comparison.reference.method}（${comparison.reference.role}）${comparison.reference.value}；` +
+    return `- ${comparison.comparisonId} [${where}] ${comparison.metricLabel ?? comparison.metric}：${comparison.subject.method}（${comparison.subject.role}）${comparison.subject.value} 对 ${comparison.reference.method}（${comparison.reference.role}）${comparison.reference.value}；` +
       `绝对差 ${comparison.absoluteDifference}；相对变化 ${comparison.relativeChange ?? "不可算"}；${outcome}`;
   });
   return [

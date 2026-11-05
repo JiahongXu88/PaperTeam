@@ -177,7 +177,10 @@ export interface WorkflowComparison {
   split: string;
   protocol: string;
   subset: string;
+  /** 规范指标键（大写叶子名，分组 / 核查用） */
   metric: string;
+  /** 展示用原始指标名（如 AssA；TrackEval 的 HOTA___AUC 显示为 HOTA） */
+  metricLabel: string;
   kind: FactComparison["kind"];
   /** 规范标度（比例统一为百分数、时间统一为秒）；canonicalValue 为该标度下的取值（ratio ×100 等确定性换算） */
   canonicalUnit: ExperimentUnit;
@@ -1699,6 +1702,41 @@ export class ExperimentPackageService {
     return candidates;
   }
 
+  /**
+   * M17.2：审稿「作者实验数据」披露的取值集合（只供确定性消费，不进 prompt）。有有效快照时 = 快照全部整体结果事实（原值与规范标度值）
+   * + 确定性对比的绝对差 / 相对变化（按 1–3 位小数的显示取值）；快照失效 = 空集；无快照 = null（调用方沿用 workflowContext 口径）。
+   * M17.2 真实运行实证：沿用 100 条代表性上下文时，稿件引用的整体值与派生差值（百分点差等）不在集合内，
+   * 与快照完全一致的实验结论被记为 opaque UNSUPPORTED。
+   */
+  async snapshotDisclosureValues(projectId: string): Promise<Array<{ value: number; metric: string; split?: string; groupId?: string }> | null> {
+    const state = await this.activeSnapshotState(projectId);
+    if (state === null) return null;
+    if (state.status !== "valid") return [];
+    const aggregate = (subset: string | undefined) => subset === undefined || subset === "" || /^(combined|all|overall|total|pooled)$/i.test(subset);
+    // 覆盖判定按数值匹配（既有语义）：TrackEval 逐阈值分量（*___<α>）论文几乎不引用，纳入只会增加巧合覆盖，排除
+    const component = (metricKey: string) => /___\d+$/.test(metricKey);
+    const values = new Map<string, { value: number; metric: string; split?: string; groupId?: string }>();
+    const add = (value: number, metric: string, extra: { split?: string; groupId?: string } = {}) => {
+      if (!Number.isFinite(value)) return;
+      const key = `${metric}\u0000${value}`;
+      if (!values.has(key)) values.set(key, { value, metric, ...extra });
+    };
+    for (const fact of state.snapshot.facts) {
+      if (!aggregate(fact.subset) || component(fact.metricKey)) continue;
+      add(fact.value, fact.metricKey, { ...(fact.split !== undefined ? { split: fact.split } : {}), groupId: fact.groupId });
+      const canonical = toCanonical(fact.value, fact.unit);
+      if (canonical !== null && canonical.value !== fact.value) add(Number(canonical.value.toFixed(6)), fact.metricKey, { groupId: fact.groupId });
+    }
+    for (const comparison of state.snapshot.comparisons) {
+      if (!aggregate(comparison.context.subset) || component(comparison.context.metricKey)) continue;
+      for (const quantity of [comparison.absoluteDifference, comparison.relativeChange]) {
+        if (quantity === null) continue;
+        for (let digits = 1; digits <= Math.max(3, quantity.displayDecimals); digits += 1) add(Number(Math.abs(quantity.value).toFixed(digits)), `${comparison.context.metricKey}:${quantity.unitLabel}`);
+      }
+    }
+    return [...values.values()];
+  }
+
   // ---------------------------------------------------------------------------
   // M17.2 实验事实快照（预览 / 作者排除 / 冻结 / 失效）
   // ---------------------------------------------------------------------------
@@ -1947,6 +1985,7 @@ export function workflowComparisons(snapshot: FactSnapshot): WorkflowComparison[
       protocol: safeContextLabel(comparison.context.protocol) ?? "[omitted]",
       subset: safeContextLabel(comparison.context.subset) ?? "",
       metric: comparison.context.metricKey,
+      metricLabel: safeContextLabel((snapshot.facts.find((fact) => fact.factId === comparison.subject.factId)?.metric.split(/[./]/).pop() ?? "").replace(/___AUC$/i, "")) ?? comparison.context.metricKey,
       kind: comparison.kind,
       canonicalUnit: comparison.canonicalUnit,
       subject: { method: safeContextLabel(comparison.subject.method) ?? "[omitted]", role: comparison.subject.role, value: comparison.subject.value, canonicalValue: canonicalOf(snapshot, comparison.subject.factId, comparison.subject.value), factId: comparison.subject.factId },

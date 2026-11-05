@@ -325,8 +325,52 @@ describe("结果表列与正文一致（M17.2 真实数据回归）", () => {
       snapshot: { snapshotId: "efs-0001", version: 1, contentHash: snapshot.contentHash, createdAt: "", status: "valid", factCount: 6, comparisonCount: 3 },
       comparisons: workflowComparisons(snapshot), observations: [],
     };
-    expect(mentionedMetrics("IDF1 从 52.600 提升到 57.940，HOTA 亦提高；IDF1 增益最大。\textbf{HOTA}", ["HOTA", "IDF1", "ASSA"])).toEqual(["IDF1", "HOTA"]);
+    expect(mentionedMetrics("IDF1 从 52.600 提升到 57.940，HOTA 亦提高；IDF1 增益最大。\\textbf{HOTA}", ["HOTA", "IDF1", "ASSA"])).toEqual(["IDF1", "HOTA"]);
     const table = renderSnapshotResultsTable(context, { preferMetrics: ["IDF1", "HOTA"] });
     expect(table.table!.metrics.slice(0, 2)).toEqual(["IDF1", "HOTA"]);
+    // 列名用原始指标名（AssA），不是规范键（ASSA）
+    expect(table.table!.latex).toContain("AssA (\\%)");
+    expect(table.table!.latex).not.toContain("ASSA");
+  });
+});
+
+describe("结果表追加（M17.2 真实运行缺陷回归）", () => {
+  it("正文里的 Table~ref 引用不阻止追加；只有同名 label 才视为已存在", async () => {
+    const { appendResultsTable } = await import("../../src/experiments/resultsTable.js");
+    const table = { label: "tab:exp-efs-0001", latex: "\\begin{table}\\label{tab:exp-efs-0001}\\end{table}" };
+    const referenced = appendResultsTable("结果汇总于 Table~\\ref{tab:exp-efs-0001}。\n", table);
+    expect(referenced.appended).toBe(true);
+    expect(referenced.latex).toContain("\\label{tab:exp-efs-0001}");
+    expect(referenced.latex.startsWith("结果汇总于 Table~\\ref{tab:exp-efs-0001}。")).toBe(true);
+    const own = appendResultsTable(table.latex, table);
+    expect(own).toEqual({ latex: table.latex, appended: false });
+  });
+});
+
+describe("核查指标归属（M17.2 真实运行误报回归）", () => {
+  it("数字前没有指标名时不猜归属：与任一对比一致即判一致；都不一致记 unbound 不报；对照：有指标名照常报", () => {
+    const snapshot = snapshotOf([
+      obs({ metric: "IDSW", value: 778, rawText: "778", unit: "count", direction: "lower" }), base({ metric: "IDSW", value: 820, rawText: "820", unit: "count", direction: "lower" }),
+      obs({ metric: "AssA", value: 70.440, rawText: "70.440" }), base({ metric: "AssA", value: 63.870, rawText: "63.870" }),
+    ]);
+    const real = auditExperimentFacts([{ file: "intro.tex", content: "身份切换次数由 820 降至 778（相对减少 5.1\\%），AssA 提高 6.570 个百分点。" }], snapshot, "valid");
+    expect(real.findings).toEqual([]);
+    expect(real.consistent).toHaveLength(2);
+    const wrong = auditExperimentFacts([{ file: "intro.tex", content: "身份切换次数相对减少 30.5\\%，AssA 提高 6.570 个百分点。" }], snapshot, "valid");
+    // 未归属且与任何对比都不一致：不出 finding，记 unbound 供人工复核（不误报）
+    expect(wrong.findings).toEqual([]);
+    expect(wrong.unbound.map((entry) => entry.claimedValue)).toEqual([30.5]);
+    // 对照：数字前有指标名时照常报 finding
+    const named = auditExperimentFacts([{ file: "intro.tex", content: "IDSW 相对减少 30.5\\%。" }], snapshot, "valid");
+    expect(named.findings.map((entry) => entry.code)).toEqual(["EXP_DELTA_NOT_IN_SNAPSHOT"]);
+  });
+});
+
+describe("核查对比绑定（M17.2 真实数据负例重放回归）", () => {
+  it("句中点名两个方法时绑定到这两个方法之间的对比", () => {
+    const snapshot = snapshotOf([obs({ method: "ma_x" }), base(), obs({ groupId: "ablation", groupRole: "ablation", method: "mb_x", value: 49.970, rawText: "49.970" })]);
+    const audit = auditExperimentFacts([{ file: "r.tex", content: "ma_x 的 HOTA 比 base 提升了 2.6\\%。" }], snapshot, "valid");
+    expect(audit.findings).toHaveLength(1);
+    expect(audit.findings[0]!.detail).toContain("ma_x 对 base");
   });
 });
