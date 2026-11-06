@@ -364,6 +364,22 @@ describe("核查指标归属（M17.2 真实运行误报回归）", () => {
     const named = auditExperimentFacts([{ file: "intro.tex", content: "IDSW 相对减少 30.5\\%。" }], snapshot, "valid");
     expect(named.findings.map((entry) => entry.code)).toEqual(["EXP_DELTA_NOT_IN_SNAPSHOT"]);
   });
+
+  it("并列枚举「X、Y 与 Z 分别为 +a、+b 个百分点」：只在枚举的指标内核对，不按位置归到最后一个指标；对照：不在枚举指标内的幅度记 unbound、单指标句照常报", () => {
+    const snapshot = snapshotOf([
+      obs({ metric: "IDP", value: 44.100, rawText: "44.100" }), base({ metric: "IDP", value: 40.300, rawText: "40.300" }),
+      obs({ metric: "IDR", value: 71.250, rawText: "71.250" }), base({ metric: "IDR", value: 64.050, rawText: "64.050" }),
+      obs({ metric: "IDTP", value: 9120, rawText: "9120", unit: "count" }), base({ metric: "IDTP", value: 8410, rawText: "8410", unit: "count" }),
+    ]);
+    const listed = auditExperimentFacts([{ file: "exp.tex", content: "IDP、IDR 与 IDTP 亦同步提高（分别为 +3.800、+7.200 个百分点与 +710 个计数）。" }], snapshot, "valid");
+    expect(listed.findings).toEqual([]);
+    expect(listed.consistent.map((entry) => entry.metric)).toEqual(["IDR"]);
+    const off = auditExperimentFacts([{ file: "exp.tex", content: "IDP、IDR 与 IDTP 分别提高 +3.800、+9.900 个百分点。" }], snapshot, "valid");
+    expect(off.findings).toEqual([]);
+    expect(off.unbound.map((entry) => entry.claimedValue)).toEqual([9.9]);
+    const single = auditExperimentFacts([{ file: "exp.tex", content: "IDR 提高 9.900 个百分点。" }], snapshot, "valid");
+    expect(single.findings.map((entry) => entry.code)).toEqual(["EXP_DELTA_NOT_IN_SNAPSHOT"]);
+  });
 });
 
 describe("核查对比绑定（M17.2 真实数据负例重放回归）", () => {

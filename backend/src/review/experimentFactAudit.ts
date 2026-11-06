@@ -62,6 +62,7 @@ const PP_CLAIM = /([+\-−]?\d+(?:\.\d+)?)\s*(?:个)?\s*(?:百分点|percentage[
 const PERCENT_CLAIM = /([+\-−]?\d+(?:\.\d+)?)\s*[%％]/g;
 const SIGNIFICANCE = /(显著(?:地)?(?:优于|高于|低于|好于|提升|提高|改善|降低|减少|增加|超过|领先|差异)|统计(?:学)?(?:意义上|上)?显著|significantly\s+(?:better|outperform\w*|improv\w*|higher|lower|reduc\w*|increas\w*|decreas\w*|exceed\w*)|statistically\s+significant|\bp\s*[<≤=]\s*0?\.\d+|\bp\s*-?\s*value\s*[<≤=]|p\s*值\s*[<≤=])/i;
 const NEGATED = /(不|未|没有|无|并非|not|no)\s*$/i;
+const RESPECTIVELY = /(分别|依次|respectively)/gi;
 
 interface Sentence { file: string; raw: string; start: number; content: string; plain: string }
 
@@ -189,12 +190,19 @@ export function auditExperimentFacts(
             return { key, last };
           })
           .sort((a, b) => b.last - a.last);
-        const attributed = located[0]!.last >= 0;
+        // 并列枚举（「IDP、IDR 与 IDTP 分别为 +a、+b 个百分点」）：位置最近的指标不一定是该数字的归属——
+        // 只在枚举片段列出的指标范围内核对，不一致记 unbound（M17.2 修复后真实运行：IDR 的幅度曾被归到 IDTP 出 major 误报）
+        const previousClaim = Math.max(-1, ...claims.filter((other) => other.index < claim.index).map((other) => other.index));
+        let marker = -1;
+        for (const found of before.matchAll(RESPECTIVELY)) if ((found.index ?? -1) > previousClaim) marker = found.index ?? -1;
+        const enumerated = marker >= 0 ? located.filter((entry) => entry.last >= 0 && entry.last < marker && entry.last > previousClaim).map((entry) => entry.key) : [];
+        const attributed = located[0]!.last >= 0 && enumerated.length < 2;
         const metric = attributed ? located[0]!.key : "(未归属)";
         result.checkedClaims += 1;
         if (!attributed) {
           const claimedAny = absInterval(displayInterval(Math.abs(claim.value), decimalsOf(claim.raw)));
-          const hit = snapshot.comparisons.find((comparison) => claim.kind === "pp"
+          const scope = enumerated.length >= 2 ? snapshot.comparisons.filter((comparison) => enumerated.includes(comparison.context.metricKey)) : snapshot.comparisons;
+          const hit = scope.find((comparison) => claim.kind === "pp"
             ? comparison.absoluteDifference.unitLabel === "pp" && overlaps(claimedAny, absInterval(comparison.absoluteDifference.interval))
             : comparison.relativeChange !== null && overlaps(claimedAny, absInterval(comparison.relativeChange.interval)));
           if (hit !== undefined) result.consistent.push({ file, line, quote, metric: hit.context.metricKey, claimedValue: claim.value, claimedKind: claim.kind, comparisonId: hit.comparisonId, operandLocators: locators(hit) });
@@ -245,7 +253,7 @@ export function auditExperimentFacts(
         result.findings.push({
           findingId: findingIdOf("EXP_DELTA_NOT_IN_SNAPSHOT", file, quote, claim.value), code: "EXP_DELTA_NOT_IN_SNAPSHOT", severity: "major", file, line, quote,
           metric, claimedValue: claim.value, claimedKind: claim.kind,
-          detail: `稿件给出的 ${metric} 变化幅度 ${claim.raw}${claim.kind === "pp" ? " 个百分点" : "%"} 与快照 ${snapshot.snapshotId} 中该指标的 ${candidates.length} 个确定性对比都不一致（例：${candidates.slice(0, 2).map((comparison) => `${comparison.subject.method} 对 ${comparison.reference.method} ${comparison.absoluteDifference.value.toFixed(comparison.absoluteDifference.displayDecimals)} pp / ${comparison.relativeChange?.value.toFixed(comparison.relativeChange.displayDecimals) ?? "-"}%`).join("；")}）`,
+          detail: `稿件给出的 ${metric} 变化幅度 ${claim.raw}${claim.kind === "pp" ? " 个百分点" : "%"} 与快照 ${snapshot.snapshotId} 中该指标的 ${candidates.length} 个确定性对比都不一致（例：${candidates.slice(0, 2).map((comparison) => `${comparison.subject.method} 对 ${comparison.reference.method} ${comparison.absoluteDifference.value.toFixed(comparison.absoluteDifference.displayDecimals)} ${comparison.absoluteDifference.unitLabel} / ${comparison.relativeChange?.value.toFixed(comparison.relativeChange.displayDecimals) ?? "-"}%`).join("；")}）`,
           matchedComparisonIds: candidates.slice(0, 3).map((comparison) => comparison.comparisonId), operandLocators: candidates.slice(0, 1).flatMap(locators),
         });
       }
