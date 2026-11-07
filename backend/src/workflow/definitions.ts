@@ -7504,6 +7504,21 @@ function researchIdeaStage(services: WorkflowServices): StageSpec {
  * 与后续 Reviewer 消费的 evidence stats 必须已经是核验后的口径。零候选时
  * no-op 通过（scripted / 离线栈无感）；幂等（只处理 pending 候选）。
  */
+/**
+ * 节流的 stage 进度心跳（M17.2.2）：解析器页面级进度可能很密，至多每 min(15s, stage
+ * 无进展上限 / 10) 上报一次——既远早于 watchdog 到期续期，又不刷爆 workflow 事件流。
+ */
+function throttledStageHeartbeat(ctx: StageRunContext, phase: string, stageTimeoutMs: number): (detail: string) => void {
+  const intervalMs = Math.min(15_000, Math.max(1, Math.floor(stageTimeoutMs / 10)));
+  let lastAt = 0;
+  return (detail) => {
+    const now = Date.now();
+    if (now - lastAt < intervalMs) return;
+    lastAt = now;
+    void ctx.emitProgress({ phase, detail }).catch(() => undefined);
+  };
+}
+
 function evidenceGroundStage(
   services: WorkflowServices,
   requiredInputs: string[] = ["research.idea"],
@@ -7523,7 +7538,12 @@ function evidenceGroundStage(
             services, ctx.projectId, await requireResearchArtifact(services, ctx.projectId),
             {
               signal: ctx.signal,
-              progress: (phase, counts) => ctx.log(`[research-evidence-supply:${phase}] ${JSON.stringify(counts)}`),
+              progress: (phase, counts) => {
+                ctx.log(`[research-evidence-supply:${phase}] ${JSON.stringify(counts)}`);
+                void ctx.emitProgress({ phase: `research-evidence-supply:${phase}`, counts }).catch(() => undefined);
+              },
+              // M17.2.2：全文解析的真实推进续期 stage 无进展 watchdog（节流；单篇解析仍有界）
+              heartbeat: throttledStageHeartbeat(ctx, "research-evidence-supply:fulltext", services.stageTimeoutMs),
             },
           )
         : undefined;
@@ -12359,6 +12379,7 @@ function thesisEvidenceSupplyStage(services: WorkflowServices): StageSpec {
         progress: (phase, counts) => {
           void ctx.emitProgress({ phase, ...counts }).catch(() => undefined);
         },
+        heartbeat: throttledStageHeartbeat(ctx, "fulltext", services.stageTimeoutMs),
       });
       return {
         skipped: false,

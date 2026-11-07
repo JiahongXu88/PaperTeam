@@ -312,7 +312,21 @@ export interface DocumentParseOptions {
   figuresDir?: string;
   /** 请求公式识别（parser 支持时；docling 需额外模型，默认关） */
   formulas?: boolean;
+  /** 取消：parser 终止子进程并以 signal.reason 拒绝（不是解析失败，调用方不落 failed 文档） */
   signal?: AbortSignal;
+  /** 解析器真实推进的心跳（M17.2.2：上游 stage 无进展 watchdog 据此续期；只观测不改结果） */
+  onProgress?: (progress: DocumentParseProgress) => void;
+}
+
+/**
+ * 解析进度（M17.2.2）。waiting_for_dependency = 模型资源预检 / 首次下载，
+ * 与用户文档解析分开计时与报错；parsing = 解析器内部真实推进（如 docling
+ * 流水线某 stage 完成一批页面）。
+ */
+export interface DocumentParseProgress {
+  state: "waiting_for_dependency" | "parsing";
+  /** 解析器自报细节（stage 名 / 页码 / 模型仓库），只用于日志与超时诊断 */
+  detail?: string;
 }
 
 /**

@@ -12,7 +12,11 @@ export const RESEARCH_SUPPLY_LIMITS = { candidates: 12, sources: 6, claims: 6 } 
  */
 export const RESEARCH_SUPPLY_JUDGE_CALL_LIMIT = 4 as const;
 type Services = Pick<WorkflowServices, "projects" | "candidates" | "sourceImport" | "sources" | "ingestion" | "targetedGrounding" | "evidenceGrounding" | "evidenceSelection">;
-export async function supplyResearchEvidence(services: Services, projectId: string, artifact: ResearchArtifact, options: { signal?: AbortSignal; progress?: (phase: string, counts: Record<string, number>) => void } = {}) {
+/**
+ * heartbeat（M17.2.2）：全文解析期间的真实推进（逐篇开始 / 解析器页面进度 / 逐篇结束），
+ * 供 stage 无进展 watchdog 续期；单篇解析自身仍受 parser 的无进展 / 总时长上限约束。
+ */
+export async function supplyResearchEvidence(services: Services, projectId: string, artifact: ResearchArtifact, options: { signal?: AbortSignal; progress?: (phase: string, counts: Record<string, number>) => void; heartbeat?: (detail: string) => void } = {}) {
   const project = await services.projects.getRequired(projectId);
   const before = await services.evidenceGrounding.candidateStats(projectId);
   const summary = { reviewed: 0, selected: 0, deduplicated: 0, promoted: 0, alreadyExists: 0, promoteFailed: 0,
@@ -76,7 +80,14 @@ export async function supplyResearchEvidence(services: Services, projectId: stri
       if (!source.fileName || source.status === "metadata_only") { fail("fulltext_unavailable"); continue; }
       summary.fulltext++;
       if ((await services.ingestion.getDocument(projectId, sourceId)) === null) {
-        try { await services.ingestion.ingest(projectId, sourceId); } catch { check(); fail("ingestion_failed"); }
+        options.heartbeat?.(`${sourceId} parse started`);
+        try {
+          await services.ingestion.ingest(projectId, sourceId, {
+            ...(options.signal !== undefined ? { signal: options.signal } : {}),
+            onProgress: (p) => options.heartbeat?.(`${sourceId} ${p.state}${p.detail !== undefined ? ` ${p.detail}` : ""}`),
+          });
+        } catch { check(); fail("ingestion_failed"); }
+        options.heartbeat?.(`${sourceId} parse settled`);
       }
       check();
       const indexed = await services.targetedGrounding.prepareSource(projectId, sourceId);

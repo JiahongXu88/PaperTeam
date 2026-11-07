@@ -43,7 +43,14 @@ import {
   type SourceAssetKind,
 } from "./parserRegistry.js";
 import { TextAssetParser } from "./textAsset.js";
-import type { DocumentExtraction, DocumentParser, ParsedBlock, ParsedDocument, ParsedRecordBlock } from "./types.js";
+import type {
+  DocumentExtraction,
+  DocumentParseProgress,
+  DocumentParser,
+  ParsedBlock,
+  ParsedDocument,
+  ParsedRecordBlock,
+} from "./types.js";
 import { emptyCounts, isDocumentFresh } from "./types.js";
 import type { ParsedDocumentStore } from "./ParsedDocumentStore.js";
 import { XlsxParser } from "./xlsxTabular.js";
@@ -67,6 +74,19 @@ export interface IngestionServiceOptions {
   assetParsers?: Partial<Record<AssetParserKind, DocumentParser>>;
   now?: () => Date;
   log?: (message: string) => void;
+}
+
+/** ingest 调用方控制（M17.2.2）：取消 + 解析进度心跳 */
+export interface IngestOptions {
+  /** 取消：本调用方发起的解析被终止且不落 failed 文档；加入他人在途解析时只结束等待 */
+  signal?: AbortSignal;
+  onProgress?: (progress: DocumentParseProgress) => void;
+}
+
+interface InflightIngest {
+  promise: Promise<ParsedDocument>;
+  /** 在途解析的进度订阅者（后台链发起、workflow 加入时也能收到心跳） */
+  listeners: Set<(progress: DocumentParseProgress) => void>;
 }
 
 export interface RecordQuery {
@@ -104,7 +124,7 @@ export class IngestionService {
   private readonly now: () => Date;
   private readonly log: (message: string) => void;
   /** 同一 source 的在途解析去重（并发上传 / 后台触发 / 手动触发不重复 spawn） */
-  private readonly inflight = new Map<string, Promise<ParsedDocument>>();
+  private readonly inflight = new Map<string, InflightIngest>();
   /** 解析产物落盘后的钩子（serviceStack 接检索失效；缺省 no-op） */
   private ingestedHook?: (projectId: string, sourceId: string, document: ParsedDocument) => Promise<void>;
   /**
@@ -139,18 +159,48 @@ export class IngestionService {
    * 解析并落盘单个 source 的 ParsedDocument（显式降级链；失败也落盘
    * status=failed 的文档——调用方可见，重试 = 再次调用）。
    */
-  async ingest(projectId: string, sourceId: string): Promise<ParsedDocument> {
+  async ingest(projectId: string, sourceId: string, options: IngestOptions = {}): Promise<ParsedDocument> {
     await this.projects.getRequired(projectId);
+    options.signal?.throwIfAborted();
     const key = `${projectId}/${sourceId}`;
-    const existing = this.inflight.get(key);
-    if (existing !== undefined) {
-      return existing;
+    let entry = this.inflight.get(key);
+    const joined = entry !== undefined;
+    if (entry === undefined) {
+      const listeners = new Set<(progress: DocumentParseProgress) => void>();
+      const created: InflightIngest = {
+        listeners,
+        promise: this.ingestInner(projectId, sourceId, {
+          ...(options.signal !== undefined ? { signal: options.signal } : {}),
+          onProgress: (progress) => {
+            for (const listener of listeners) {
+              try {
+                listener(progress);
+              } catch {
+                // 心跳回调失败不影响解析
+              }
+            }
+          },
+        }).finally(() => {
+          this.inflight.delete(key);
+        }),
+      };
+      this.inflight.set(key, created);
+      entry = created;
     }
-    const task = this.ingestInner(projectId, sourceId).finally(() => {
-      this.inflight.delete(key);
-    });
-    this.inflight.set(key, task);
-    return task;
+    const { onProgress } = options;
+    if (onProgress !== undefined) {
+      entry.listeners.add(onProgress);
+    }
+    try {
+      // 加入他人发起的在途解析：取消只结束本调用方的等待，不终止共享解析（发起方拥有生命周期）
+      return joined && options.signal !== undefined
+        ? await raceAbort(entry.promise, options.signal)
+        : await entry.promise;
+    } finally {
+      if (onProgress !== undefined) {
+        entry.listeners.delete(onProgress);
+      }
+    }
   }
 
   /** 后台触发（上传后的 fire-and-forget；串行执行，失败只记日志） */
@@ -171,7 +221,11 @@ export class IngestionService {
     await this.backgroundChain;
   }
 
-  private async ingestInner(projectId: string, sourceId: string): Promise<ParsedDocument> {
+  private async ingestInner(
+    projectId: string,
+    sourceId: string,
+    control: { signal?: AbortSignal; onProgress?: (progress: DocumentParseProgress) => void } = {},
+  ): Promise<ParsedDocument> {
     const item = await this.sources.getRequired(projectId, sourceId);
     if (item.fileName === undefined) {
       throw new BusinessError("INVALID_REQUEST", `文献 ${sourceId} 是 metadata-only 条目（无原始文件可解析）`);
@@ -194,9 +248,11 @@ export class IngestionService {
         try {
           extraction = await this.structuredParser.parseFile(filePath, {
             figuresDir: this.documents.figuresDir(projectId, sourceId),
+            ...(control.signal !== undefined ? { signal: control.signal } : {}),
+            ...(control.onProgress !== undefined ? { onProgress: control.onProgress } : {}),
           });
         } catch (error) {
-          if (isUnavailable(error) && this.fallbackParser !== undefined) {
+          if (isUnavailable(error) && this.fallbackParser !== undefined && control.signal?.aborted !== true) {
             const reason = error instanceof Error ? error.message : String(error);
             this.log(`[ingestion] ${sourceId} 结构化解析器不可用，降级到文本层：${reason.slice(0, 160)}`);
             extraction = await this.fallbackParser.parseFile(filePath);
@@ -239,6 +295,10 @@ export class IngestionService {
       }
       return document;
     } catch (error) {
+      // 取消不是解析失败（M17.2.2）：不落 failed 文档，否则重试会把「被取消」当成「已解析失败」跳过
+      if (control.signal?.aborted === true) {
+        throw error;
+      }
       // 解析失败如实落盘（可重试；不静默、不伪装成功）
       const reason = error instanceof Error ? error.message : String(error);
       const storageKind = documentKindOfAssetKind(kind);
@@ -590,4 +650,25 @@ export function claimMentionsValue(claim: string, value: string): boolean {
 function errorText(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error);
   return message.slice(0, 200);
+}
+
+/** 等待 promise，signal 先触发则以 signal.reason 拒绝（不影响 promise 本身） */
+function raceAbort<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
+  if (signal.aborted) {
+    return Promise.reject(signal.reason ?? new Error("aborted"));
+  }
+  return new Promise<T>((resolvePromise, rejectPromise) => {
+    const onAbort = () => rejectPromise(signal.reason ?? new Error("aborted"));
+    signal.addEventListener("abort", onAbort, { once: true });
+    promise.then(
+      (value) => {
+        signal.removeEventListener("abort", onAbort);
+        resolvePromise(value);
+      },
+      (error: unknown) => {
+        signal.removeEventListener("abort", onAbort);
+        rejectPromise(error);
+      },
+    );
+  });
 }

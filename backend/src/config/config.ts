@@ -19,6 +19,7 @@ import {
   REVIEW_UNIT_CONTEXT_POLICIES,
   type ReviewUnitContextPolicy,
 } from "../review/reviewContextSnapshot.js";
+import { DOCLING_DEFAULT_LIMITS } from "../ingestion/doclingLimits.js";
 import { CLAIM_AUDIT_MODES, parseClaimAuditMode, type ClaimAuditMode } from "../review/claimAuditMode.js";
 import type { UnitClaimStage } from "../review/claimAudit.js";
 
@@ -331,6 +332,22 @@ export interface IngestionConfig {
    * 无效值回退默认，不阻断启动（与 reviewConcurrency 同纪律）。
    */
   doclingConcurrency: number;
+  /**
+   * M17.2.2 docling 解析分层上限（毫秒；越界报错——超时是正确性约束）：
+   * - doclingTimeoutMs：单篇解析总时长硬上限（PAPERTEAM_DOCLING_TIMEOUT_MS，默认 30 min）；
+   * - doclingIdleTimeoutMs：单篇解析无进展上限（PAPERTEAM_DOCLING_IDLE_TIMEOUT_MS，默认 5 min；
+   *   解析器每完成一批页面即续期）；
+   * - doclingWarmupTimeoutMs：首次模型下载上限（PAPERTEAM_DOCLING_WARMUP_TIMEOUT_MS，默认 30 min；
+   *   与文档解析分开计时）。
+   */
+  doclingTimeoutMs: number;
+  doclingIdleTimeoutMs: number;
+  doclingWarmupTimeoutMs: number;
+  /**
+   * 模型资源预检（PAPERTEAM_DOCLING_MODEL_PREFLIGHT，默认 true）：首次解析前离线确认模型缓存，
+   * 命中则解析子进程离线运行；未命中则先独立下载。false = 旧行为（每篇联网核对模型）。
+   */
+  doclingModelPreflight: boolean;
 }
 
 /** Research 网络出口（M13.8） */
@@ -813,6 +830,22 @@ export function loadConfig(source: Record<string, string | undefined> = process.
         min: CONCURRENCY_MIN,
         max: CONCURRENCY_MAX,
       }),
+      doclingTimeoutMs: readTimeoutMs(source, "PAPERTEAM_DOCLING_TIMEOUT_MS", {
+        default: DOCLING_DEFAULT_LIMITS.timeoutMs,
+        min: 10_000,
+        max: 14_400_000,
+      }),
+      doclingIdleTimeoutMs: readTimeoutMs(source, "PAPERTEAM_DOCLING_IDLE_TIMEOUT_MS", {
+        default: DOCLING_DEFAULT_LIMITS.idleTimeoutMs,
+        min: 10_000,
+        max: 3_600_000,
+      }),
+      doclingWarmupTimeoutMs: readTimeoutMs(source, "PAPERTEAM_DOCLING_WARMUP_TIMEOUT_MS", {
+        default: DOCLING_DEFAULT_LIMITS.warmupTimeoutMs,
+        min: 10_000,
+        max: 14_400_000,
+      }),
+      doclingModelPreflight: readBool(source, "PAPERTEAM_DOCLING_MODEL_PREFLIGHT", true),
     },
   };
 }

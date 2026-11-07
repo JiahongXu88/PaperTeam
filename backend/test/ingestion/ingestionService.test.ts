@@ -8,7 +8,7 @@
  *   不提升 grounded_verified）
  */
 
-import { afterAll, describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it, vi } from "vitest";
 
 import { isFormalEvidence, classifyEvidence } from "../../src/evidence/EvidenceSelectionService.js";
 import { DocumentParseFailedError } from "../../src/errors.js";
@@ -19,6 +19,7 @@ import {
   stubParser,
 } from "./fixtures.js";
 import { isDocumentFresh } from "../../src/ingestion/types.js";
+import type { DocumentParseOptions, DocumentParseProgress, DocumentParser } from "../../src/ingestion/types.js";
 
 afterAll(async () => {
   await cleanupIngestionFixtures();
@@ -297,5 +298,106 @@ describe("M10.1C XLSX ingestion（sheet provenance）", () => {
     const document = await f.ingestion.ingest(f.projectId, source.sourceId);
     expect(document.status).toBe("failed");
     expect(document.notes[0]).toContain("解析失败");
+  });
+});
+
+/** 受控 parser：解析挂起直到 release()；progress() 经当前解析的 onProgress 上报；尊重 signal */
+function gatedParser() {
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let current: DocumentParseOptions = {};
+  let calls = 0;
+  let markStarted!: () => void;
+  const started = new Promise<void>((resolve) => {
+    markStarted = resolve;
+  });
+  const parser: DocumentParser = {
+    id: "docling",
+    async parseFile(_path: string, options: DocumentParseOptions = {}) {
+      calls += 1;
+      current = options;
+      markStarted();
+      options.signal?.throwIfAborted();
+      await new Promise<void>((resolve, reject) => {
+        void gate.then(resolve);
+        options.signal?.addEventListener("abort", () => reject(options.signal?.reason), { once: true });
+      });
+      return fakeStructuredExtraction();
+    },
+  };
+  return {
+    parser,
+    release: () => release(),
+    /** parseFile 已被调用（替代固定 sleep，避免高负载下时序抖动） */
+    started,
+    progress: (detail: string) => current.onProgress?.({ state: "parsing", detail }),
+    calls: () => calls,
+  };
+}
+
+describe("M17.2.2 ingest 取消与进度心跳", () => {
+  it("发起方取消 → 拒绝且不落 failed 文档（取消 ≠ 解析失败）；之后重新 ingest 正常完成", async () => {
+    const gated = gatedParser();
+    const f = await newIngestionFixture({ structuredParser: gated.parser });
+    const source = await f.addFileSource("paper.pdf", Buffer.from("%PDF-1.4 fake"));
+    const controller = new AbortController();
+    const pending = f.ingestion.ingest(f.projectId, source.sourceId, { signal: controller.signal });
+    await gated.started;
+    controller.abort(new Error("stage-timeout"));
+    await expect(pending).rejects.toThrow("stage-timeout");
+    expect(await f.documents.load(f.projectId, source.sourceId)).toBeNull();
+
+    gated.release();
+    const document = await f.ingestion.ingest(f.projectId, source.sourceId);
+    expect(document.status).toBe("ok");
+    expect(gated.calls()).toBe(2);
+  });
+
+  it("加入他人发起的在途解析：收到进度心跳；加入方取消只结束自己的等待，共享解析继续", async () => {
+    const gated = gatedParser();
+    const f = await newIngestionFixture({ structuredParser: gated.parser });
+    const source = await f.addFileSource("paper.pdf", Buffer.from("%PDF-1.4 fake"));
+    const owner = f.ingestion.ingest(f.projectId, source.sourceId);
+    await gated.started;
+    const heard: DocumentParseProgress[] = [];
+    const controller = new AbortController();
+    const joined = f.ingestion.ingest(f.projectId, source.sourceId, {
+      signal: controller.signal,
+      onProgress: (event) => heard.push(event),
+    });
+    // 加入方的订阅在 ingest 内部异步完成：重复发进度直到被听到（不依赖固定 sleep）
+    await vi.waitFor(() => {
+      gated.progress("pipeline layout p1");
+      expect(heard.length).toBeGreaterThan(0);
+    });
+    expect(heard.every((event) => event.state === "parsing" && event.detail === "pipeline layout p1")).toBe(true);
+    const heardBeforeCancel = heard.length;
+    controller.abort(new Error("joiner-cancelled"));
+    await expect(joined).rejects.toThrow("joiner-cancelled");
+    gated.progress("pipeline table p1");
+    expect(heard).toHaveLength(heardBeforeCancel);
+
+    gated.release();
+    await expect(owner).resolves.toMatchObject({ status: "ok" });
+    expect(gated.calls()).toBe(1);
+  });
+
+  it("解析超时类失败（parser 报 INGESTION_PARSE_FAILED）仍如实落 failed 文档，消息不提模型下载", async () => {
+    const f = await newIngestionFixture({
+      structuredParser: {
+        id: "docling",
+        async parseFile() {
+          throw new DocumentParseFailedError("解析无进展超时（300000ms 内没有新的解析进度；最后进度：pipeline table p3）");
+        },
+      },
+    });
+    const source = await f.addFileSource("paper.pdf", Buffer.from("%PDF-1.4 fake"));
+    const document = await f.ingestion.ingest(f.projectId, source.sourceId);
+    expect(document.status).toBe("failed");
+    expect(document.blocks).toHaveLength(0);
+    expect(document.notes[0]).toContain("无进展");
+    expect(document.notes[0]).not.toContain("模型下载");
   });
 });

@@ -240,6 +240,13 @@ export interface ServiceStackOptions {
    * M12.2.5——torch 子进程逐个执行，避免资源争抢；注入 structuredParser 时忽略）
    */
   doclingMaxConcurrency?: number;
+  /** M17.2.2 docling 分层上限与模型预检（缺省见 DOCLING_DEFAULT_LIMITS；注入 structuredParser 时忽略） */
+  doclingLimits?: {
+    timeoutMs?: number;
+    idleTimeoutMs?: number;
+    warmupTimeoutMs?: number;
+    modelPreflight?: boolean;
+  };
   /**
    * Research Discovery（M6.3）：Academic / Web Search provider 装配。
    * 缺省零配置 = OpenAlex + arXiv + 匿名 S2（学术链路可用），SearXNG / AMiner
@@ -715,6 +722,7 @@ export function buildServiceStack(options: ServiceStackOptions): ServiceStack {
       ...(options.doclingMaxConcurrency !== undefined
         ? { maxConcurrency: options.doclingMaxConcurrency }
         : {}),
+      ...(options.doclingLimits ?? {}),
       log,
     });
   const legacyPdfTextParser =

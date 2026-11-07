@@ -5,6 +5,7 @@
  *
  * 首次运行会从 HuggingFace 下载布局 / TableFormer 模型（数百 MB，落盘
  * 缓存后不再联网）；国内网络默认走 hf-mirror（HF_ENDPOINT 未显式设置时）。
+ * M17.2.2：第一个用例开启模型预检（warmup 与离线解析的真实路径）。
  */
 
 import { execFileSync } from "node:child_process";
@@ -64,9 +65,17 @@ describe.skipIf(!doclingInstalled)("M10.1 真实 docling smoke（attention.pdf�
     "PDF → docling → 结构化 blocks（正文 / 表格 / 图 / 页码 provenance）",
     { timeout: 900_000 },
     async () => {
-      const parser = new DoclingParser({ timeoutMs: 880_000 });
+      // M17.2.2：生产同款模型预检——干净 runner 上走「缺失 → warmup 下载 → 离线解析」，
+      // 已缓存时走「命中 → 离线解析」；两条路径都必须拿到真实解析进度
+      const parser = new DoclingParser({ timeoutMs: 880_000, modelPreflight: true });
       const figuresDir = join(tmp, "figures");
-      const extraction = await parser.parseFile(FIXTURE_PDF, { figuresDir });
+      const progress: string[] = [];
+      const extraction = await parser.parseFile(FIXTURE_PDF, {
+        figuresDir,
+        onProgress: (event) => progress.push(`${event.state} ${event.detail ?? ""}`),
+      });
+      expect(parser.modelResourceState).toBe("ready");
+      expect(progress.some((line) => line.startsWith("parsing pipeline"))).toBe(true);
       expect(extraction.mode).toBe("structured");
       expect(extraction.pageCount).toBeGreaterThan(10);
       expect(extraction.blocks.length).toBeGreaterThan(50);

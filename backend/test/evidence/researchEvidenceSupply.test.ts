@@ -18,14 +18,14 @@ const artifact: ResearchArtifact = {
     researchGaps: ["Further evaluation required"], potentialContributions: [], researchQuestions: [], literaturePlan: [] },
   evidence: [], bibliography: [],
 };
-async function setup(judge?: string) {
+async function setup(judge?: string, stageBudget?: { timeoutMs?: number; maxAttempts?: number }) {
   const scripted = scriptedIdeaRuntime(judge ? { evidenceJudgeOutput: judge } : {});
   const originalRun = scripted.runtime.runAgent.bind(scripted.runtime);
   scripted.runtime.runAgent = async (input) => {
     const result = await originalRun(input);
     return input.contextScope === "research" ? { ...result, output: JSON.stringify({ ...JSON.parse(RESEARCH_JSON), domainOverview: claim, evidence: [] }) } : result;
   };
-  const stack = await startTestStack(scripted.runtime, { registerCleanup: (c) => cleanups.push(c),
+  const stack = await startTestStack(scripted.runtime, { registerCleanup: (c) => cleanups.push(c), ...(stageBudget !== undefined ? { stageBudget } : {}),
     citation: { metadataEnabled: false, scholarly: { providers: [fakeScholarlyProvider(() => ({
       kind: "match", record: canonicalRecord({ title: "Retrieval augmented generation hallucination", doi: "10.1000/supply", authors: ["Doe, Jane"], year: 2023 }),
     }))] } },
@@ -182,6 +182,74 @@ describe("research supply with real stores, lexical retrieval and grounding; con
     expect(resolve).toHaveBeenCalledTimes(1);
     expect(r.failures["rate_limited_stop"]).toBe(1);
     expect(r.formalEvidence).toBe(0);
+  });
+  it("M17.2.2: parser progress reaches the stage heartbeat and the stage signal is forwarded to ingestion", async () => {
+    const { stack, project } = await setup(); accessibleText(stack);
+    const controller = new AbortController();
+    const realIngest = stack.stack.ingestion.ingest.bind(stack.stack.ingestion);
+    const ingest = vi.spyOn(stack.stack.ingestion, "ingest").mockImplementation(async (projectId, sourceId, options) => {
+      options?.onProgress?.({ state: "parsing", detail: "pipeline layout p1" });
+      return realIngest(projectId, sourceId, options);
+    });
+    const beats: string[] = [];
+    const r = await supplyResearchEvidence(stack.stack.workflowServices, project.id, artifact, { signal: controller.signal, heartbeat: (detail) => beats.push(detail) });
+    expect(ingest).toHaveBeenCalledTimes(1);
+    expect(ingest.mock.calls[0]![2]?.signal).toBe(controller.signal);
+    const sourceId = (await stack.stack.sources.list(project.id))[0]!.sourceId;
+    expect(beats).toEqual([`${sourceId} parse started`, `${sourceId} parsing pipeline layout p1`, `${sourceId} parse settled`]);
+    expect(r.formalEvidence).toBe(1);
+  });
+  it("M17.2.2: a failed full-text parse is reported as a failure, never as evidence by itself", async () => {
+    const { stack, project } = await setup(); accessibleText(stack);
+    vi.spyOn(stack.stack.ingestion, "ingest").mockRejectedValue(new Error("parser bounded failure"));
+    vi.spyOn(stack.stack.targetedGrounding, "prepareSource").mockResolvedValue({ status: "skipped", chunkCount: 0, reason: "parse_failed" } as never);
+    const r = await supplyResearchEvidence(stack.stack.workflowServices, project.id, artifact);
+    expect(r.failures["ingestion_failed"]).toBe(1);
+    expect(r.chunkedSources).toBe(0);
+    expect(r.proposed).toBe(0);
+    expect(r.formalEvidence).toBe(0);
+  });
+  async function awaitRun(stack: TestStack, runId: string): Promise<Record<string, any>> {
+    let run: Record<string, any> = {};
+    for (let i = 0; i < 1000; i++) {
+      run = (await stack.request("GET", `/api/runs/${runId}`)).body["run"] as Record<string, any>;
+      if (["awaiting_input", "failed", "completed"].includes(run["status"])) break;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    return run;
+  }
+  /** 慢解析替身：totalMs 内每 tickMs 报一次真实进度（tickMs=null 表示完全不报），尊重取消 */
+  function slowIngest(stack: TestStack, totalMs: number, tickMs: number | null) {
+    const realIngest = stack.stack.ingestion.ingest.bind(stack.stack.ingestion);
+    return vi.spyOn(stack.stack.ingestion, "ingest").mockImplementation(async (projectId, sourceId, options) => {
+      await new Promise<void>((resolve, reject) => {
+        const ticker = tickMs === null ? undefined
+          : setInterval(() => options?.onProgress?.({ state: "parsing", detail: "pipeline layout p1" }), tickMs);
+        const done = setTimeout(() => { clearInterval(ticker); resolve(); }, totalMs);
+        options?.signal?.addEventListener("abort", () => { clearInterval(ticker); clearTimeout(done); reject(options.signal?.reason); }, { once: true });
+      });
+      return realIngest(projectId, sourceId, options);
+    });
+  }
+  it("M17.2.2: evidence.ground survives a parse longer than the stage no-progress budget while the parser reports progress", async () => {
+    // stage 无进展上限 5s；解析本身 12s（远超上限），期间每 100ms 报一次真实进度
+    const { stack, project } = await setup(undefined, { timeoutMs: 5_000, maxAttempts: 1 }); accessibleText(stack);
+    slowIngest(stack, 12_000, 100);
+    const runId = (await stack.request("POST", `/api/projects/${project.id}/workflows`, {})).body["runId"] as string;
+    const run = await awaitRun(stack, runId);
+    expect(run["status"], JSON.stringify(run["error"])).toBe("awaiting_input");
+    expect(run["stageResults"]["evidence.ground"]["researchSupply"]["formalEvidence"]).toBe(1);
+    await stack.request("POST", `/api/runs/${runId}/cancel`, {});
+  });
+  it("M17.2.2: a parse with no progress still trips the stage watchdog (bounded), and yields no evidence", async () => {
+    const { stack, project } = await setup(undefined, { timeoutMs: 1_500, maxAttempts: 1 }); accessibleText(stack);
+    const ingest = slowIngest(stack, 60_000, null);
+    const runId = (await stack.request("POST", `/api/projects/${project.id}/workflows`, {})).body["runId"] as string;
+    const run = await awaitRun(stack, runId);
+    expect(run["status"]).toBe("failed");
+    expect(JSON.stringify(run["error"])).toContain("内无进展");
+    expect(ingest.mock.calls[0]![2]?.signal?.aborted).toBe(true);
+    expect((await stack.stack.workflowServices.evidenceSelection.selectForWriting(project.id)).formal).toHaveLength(0);
   });
   it("quote windows preserve linebreaks and repeated whitespace exactly", () => {
     const input = "First sentence without keywords.\n\n  " + claim + "  Another sentence.";

@@ -230,6 +230,30 @@ describe("loadConfig", () => {
     expect(loadConfig({ PAPERTEAM_DOCLING_CONCURRENCY: "abc" }).ingestion.doclingConcurrency).toBe(1);
   });
 
+  it("M17.2.2 docling 分层上限与模型预检：有界默认值；合法值采用；越界报错（超时是正确性约束）", () => {
+    const defaults = loadConfig({}).ingestion;
+    expect(defaults.doclingIdleTimeoutMs).toBe(300_000);
+    expect(defaults.doclingTimeoutMs).toBe(1_800_000);
+    expect(defaults.doclingWarmupTimeoutMs).toBe(1_800_000);
+    expect(defaults.doclingModelPreflight).toBe(true);
+    const custom = loadConfig({
+      PAPERTEAM_DOCLING_IDLE_TIMEOUT_MS: "120000",
+      PAPERTEAM_DOCLING_TIMEOUT_MS: "600000",
+      PAPERTEAM_DOCLING_WARMUP_TIMEOUT_MS: "900000",
+      PAPERTEAM_DOCLING_MODEL_PREFLIGHT: "false",
+    }).ingestion;
+    expect(custom).toMatchObject({
+      doclingIdleTimeoutMs: 120_000,
+      doclingTimeoutMs: 600_000,
+      doclingWarmupTimeoutMs: 900_000,
+      doclingModelPreflight: false,
+    });
+    expect(() => loadConfig({ PAPERTEAM_DOCLING_IDLE_TIMEOUT_MS: "0" })).toThrow(ConfigError);
+    expect(() => loadConfig({ PAPERTEAM_DOCLING_TIMEOUT_MS: "abc" })).toThrow(ConfigError);
+    expect(() => loadConfig({ PAPERTEAM_DOCLING_WARMUP_TIMEOUT_MS: "99999999" })).toThrow(ConfigError);
+    expect(() => loadConfig({ PAPERTEAM_DOCLING_MODEL_PREFLIGHT: "maybe" })).toThrow(ConfigError);
+  });
+
   it("M15.4.3 CandidateProposer 影子旁路开关：默认 off；on 采用；非法值回退 off", () => {
     expect(loadConfig({}).review.candidateShadow).toBe("off");
     expect(loadConfig({ PAPERTEAM_CANDIDATE_SHADOW: "on" }).review.candidateShadow).toBe("on");

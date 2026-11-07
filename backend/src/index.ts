@@ -380,6 +380,12 @@ export async function startBackend(): Promise<void> {
       ? { doclingPythonCommand: config.pdf.doclingPythonCommand }
       : {}),
     doclingMaxConcurrency: config.ingestion.doclingConcurrency,
+    doclingLimits: {
+      timeoutMs: config.ingestion.doclingTimeoutMs,
+      idleTimeoutMs: config.ingestion.doclingIdleTimeoutMs,
+      warmupTimeoutMs: config.ingestion.doclingWarmupTimeoutMs,
+      modelPreflight: config.ingestion.doclingModelPreflight,
+    },
     ...(targetSummaryModel !== undefined ? { targetSummaryModel } : {}),
     // M15.16：Target 面板「证据审计（实验性）」——PAPERTEAM_TARGET_EVIDENCE_AUDIT_ENABLED
     // 缺省 false（不装配服务；既有 Review / Target / Gate 路径零改动）
