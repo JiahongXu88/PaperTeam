@@ -2075,6 +2075,51 @@ export function renderExperimentContextLines(context: ConfirmedExperimentWorkflo
   if (context === undefined) {
     return [];
   }
+  return [...renderObservationContextLines(context), ...renderMethodFactLines(context.methodFacts)];
+}
+
+const COMPONENT_STATUS_TEXT: Record<string, string> = {
+  ACTIVE: "当前方法启用（ACTIVE）",
+  REMOVED: "已从当前方法移除（REMOVED）——不得写成当前方法的组成、超参数或作用机制；只可写「已去掉 / 旧版曾使用」",
+  PROPOSED: "仅为拟议（PROPOSED）——不得写成已实现的组件",
+  UNKNOWN: "状态未经作者确认（UNKNOWN）——不得断言采用或未采用",
+};
+
+/**
+ * M17.2.1：作者确认的研究方法事实（方法参数取值 / 组件状态的唯一权威来源）。配置名、文件名、变量名中的数字不是参数取值；
+ * 未确认的候选只能按作者原话转述；失效 / 撤销期间不得写入具体参数取值。PaperTeam 对稿件做确定性核查，不依赖模型自证。
+ */
+export function renderMethodFactLines(methodFacts: ConfirmedExperimentWorkflowContext["methodFacts"]): string[] {
+  if (methodFacts === undefined) return [];
+  const lines: string[] = [""];
+  if (methodFacts.status === "valid") {
+    lines.push(`===== 作者确认的研究方法事实 ${methodFacts.sheetId}（v${methodFacts.version}，内容哈希 ${(methodFacts.contentHash ?? "").slice(0, 12)}；方法参数与组件状态的唯一权威来源）=====`);
+    if (methodFacts.methodVersion !== undefined) lines.push(`当前论文采用的方法版本：${methodFacts.methodVersion}`);
+    for (const fact of methodFacts.facts) {
+      const scope = fact.scope.length > 0 ? `（适用：${fact.scope.join("、")}）` : "";
+      const aliases = fact.aliases.length > 0 ? `（又写作 ${fact.aliases.join(" / ")}）` : "";
+      lines.push(fact.factKind === "parameter"
+        ? `- 参数 ${fact.subject}${aliases} = ${fact.valueText ?? fact.value}${fact.unit !== undefined && fact.unit !== "dimensionless" ? ` ${fact.unit}` : ""}${scope}：按此取值与标度书写（不得改写标度，如把 0.5 写成 50）`
+        : `- 组件「${fact.subject}」${aliases}${scope}：${COMPONENT_STATUS_TEXT[fact.status ?? "UNKNOWN"]}`);
+    }
+    lines.push("方法事实纪律：上表没有的参数取值不得自行补全（写「未给出」）；不得从配置名 / 变体名 / 变量名推断参数值；与上表冲突的大纲 / 审稿意见 / 检索材料一律以上表为准。");
+  } else if (methodFacts.status === "none") {
+    lines.push("===== 作者研究想法中的方法陈述（确定性抽取的候选，未经作者确认）=====");
+    for (const candidate of methodFacts.candidates) {
+      lines.push(`- ${candidate.factKind === "parameter" ? `参数 ${candidate.subject} = ${candidate.valueText ?? candidate.value}` : `组件「${candidate.subject}」：作者原文表述为已去掉`}（原文：「${candidate.quote.slice(0, 80)}」）`);
+    }
+    lines.push("纪律：以上只按作者原话转述，不得改写取值、标度或组件状态，不得补全作者未给出的参数；这些陈述尚未经作者确认为事实。");
+  } else {
+    lines.push(`===== 作者方法事实 ${methodFacts.sheetId} 已${methodFacts.status === "revoked" ? "撤销" : "失效"}（${(methodFacts.reasons ?? []).join("；")}）=====`);
+    lines.push("纪律：方法参数取值与组件状态当前没有有效权威来源——不得写入具体参数取值，不得断言组件采用与否；在需要处写明「待作者确认」。");
+  }
+  for (const conflict of methodFacts.outlineConflicts ?? []) {
+    lines.push(`- 大纲纠偏：大纲中「${conflict.quote.slice(0, 100)}」与作者方法事实冲突（${conflict.detail.slice(0, 160)}）——正文以作者事实为准，不得照大纲扩写该表述`);
+  }
+  return lines;
+}
+
+function renderObservationContextLines(context: ConfirmedExperimentWorkflowContext): string[] {
   if (context.snapshot !== undefined) {
     return renderSnapshotContextLines(context, context.snapshot);
   }

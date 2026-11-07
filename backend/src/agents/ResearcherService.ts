@@ -20,6 +20,7 @@ import type { EvidenceAppendInput, EvidenceStore } from "../evidence/EvidenceSto
 import type { EvidenceGroundingService } from "../evidence/EvidenceGroundingService.js";
 import type { SourceStore, SourceItem } from "../sources/SourceStore.js";
 import type { ConfirmedExperimentWorkflowContext } from "../experiments/ExperimentPackageService.js";
+import { renderMethodFactLines } from "../writer/WriterService.js";
 import { compactTitle } from "../citation/referenceText.js";
 import {
   appendRequirementSupplyQuery,
@@ -996,6 +997,8 @@ export function buildResearchPrompt(
           JSON.stringify(experimentContext),
         ]
       : []),
+    // M17.2.1：作者方法事实（研究空白 / 贡献不得把作者已移除的组件或未给出的参数写成当前方法的一部分）
+    ...renderMethodFactLines(experimentContext?.methodFacts),
     ...(extraInstructions
       ? ["", "===== 用户补充说明 =====", extraInstructions]
       : []),

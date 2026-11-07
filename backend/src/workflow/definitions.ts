@@ -271,6 +271,7 @@ import {
   type ClaimRepairDirective,
 } from "../review/claimGrounding.js";
 import { auditExperimentFacts } from "../review/experimentFactAudit.js";
+import { auditMethodFacts, methodFactPatchViolations, type AuditText, type MethodFactAuditResult } from "../experiments/methodFacts.js";
 import { appendResultsTable, mentionedMetrics, renderSnapshotResultsTable, selectResultsSection } from "../experiments/resultsTable.js";
 import type { ReviewArtifactStore } from "../review/reviewArtifacts.js";
 import { buildRevisionPlan, dispatchableRevisionItems, findingFingerprint, type RevisionPlan, type RevisionPlanItem } from "../review/revisionPlan.js";
@@ -1788,6 +1789,47 @@ function reviewRunStageInner(
           }
           await services.reviewArtifacts.saveExperimentFactAudit(ctx.projectId, round, audit);
           ctx.log(`[review] 实验事实快照核查：快照 ${audit.snapshotId}（${audit.snapshotStatus}），幅度主张 ${audit.checkedClaims}，一致 ${audit.consistent.length}，finding ${audit.findings.length}（${[...new Set(audit.findings.map((entry) => entry.code))].join("、") || "无"}）`);
+        }
+      }
+      /**
+       * M17.2.1：作者方法事实独立核查（零模型，不依赖 Writer / 模型自证）——参数取值与标度、组件状态（已移除写成当前组件等）。
+       * 与已确认事实冲突 = fact major（Gate 计入）；无来源参数 / 不确定提及 = minor + 需作者裁决；无有效事实表 = 不报「通过」。
+       */
+      if (options.survey !== true && !publishedAssessment) {
+        const methodState = await services.experimentPackages.methodFactState(ctx.projectId);
+        if (methodState.status !== "none" || methodState.candidates.length > 0) {
+          const reviewProject = await services.projects.getRequired(ctx.projectId);
+          const snapshotForKeys = await services.experimentPackages.activeSnapshotState(ctx.projectId);
+          const methodAudit = auditMethodFacts(
+            latexForAttribution.allTex.map((file) => ({ file: file.relativePath, content: file.content })),
+            methodState,
+            { stage: `review-r${round}`, ...(reviewProject.researchIdea !== undefined ? { researchIdea: reviewProject.researchIdea } : {}), metricKeys: [...new Set((snapshotForKeys?.snapshot.facts ?? []).map((fact) => fact.metricKey))] },
+          );
+          for (const finding of methodAudit.findings) {
+            const unit = finding.quote.length >= 12 ? unitLocator.find((entry) => normalizeAnchorText(entry.text).includes(normalizeAnchorText(finding.quote))) : undefined;
+            const conflict = finding.code === "METHOD_PARAM_CONFLICT" || finding.code === "METHOD_COMPONENT_CONFLICT";
+            summary.issues.push({
+              category: "fact",
+              severity: finding.severity,
+              section: unit?.heading ?? finding.file,
+              description: `方法事实核查（${finding.code}）：${finding.detail}`,
+              suggestedAction: conflict
+                ? "按作者确认的方法事实改写该句（参数取值与标度、组件状态以事实表为准）；已移除的组件只能作为「已去掉 / 旧版曾使用」说明，其余逐字保留。"
+                : finding.code === "METHOD_FACTS_STALE"
+                  ? "请作者在「实验数据包 → 方法事实」中重新确认方法事实后复核稿件。"
+                  : "需作者确认：在「方法事实」中登记该参数 / 组件状态，或删除该具体取值 / 断言（不得由模型补全）。",
+              reason: `PaperTeam 对照作者方法事实 ${methodAudit.sheetId ?? "（无已确认事实表，仅研究想法候选）"}${methodAudit.sheetContentHash !== undefined ? `（内容哈希 ${methodAudit.sheetContentHash.slice(0, 12)}）` : ""}确定性核查；作者确认 ≠ 外部核验`,
+              evidenceRequirement: "required",
+              blocking: false,
+              rootCauseKey: `method-fact:${finding.findingId}`,
+              ...(finding.quote.length >= 12 ? { quote: finding.quote } : {}),
+              ...(unit !== undefined ? { file: unit.file, logicalSection: unit.spanId } : { file: finding.file }),
+            });
+            if (finding.severity === "major") { summary.counts.major += 1; summary.openMajor += 1; } else { summary.counts.minor += 1; }
+            summary.counts.byCategory["fact"] = (summary.counts.byCategory["fact"] ?? 0) + 1;
+          }
+          await services.reviewArtifacts.saveMethodFactAudit(ctx.projectId, `r${round}`, methodAudit);
+          ctx.log(`[review] 方法事实核查（${methodAudit.factState}${methodAudit.evaluated ? "" : "，未以已确认事实评估"}）：参数 ${methodAudit.checkedParameters}、组件提及 ${methodAudit.checkedComponentMentions}，一致 ${methodAudit.consistent.length}，finding ${methodAudit.findings.length}（${[...new Set(methodAudit.findings.map((entry) => entry.code))].join("、") || "无"}）`);
         }
       }
       // M15.1：Review Claim Ledger + finding provenance audit + 只读引用审计（shadow；生产 Gate 不读）
@@ -3440,6 +3482,15 @@ function revisionReviseStage(
             ? { anchorText: (await collectLatexFiles(services.projects.manuscriptDir(ctx.projectId))).allTex.map((file) => file.content).join("\n") }
             : {},
         );
+      // M17.2.1：修订补丁的方法事实守卫输入（作者事实表 / 研究想法原文 / 快照指标名）
+      const revisionMethodFactState = isSurveyKind(ctx.state.workflowKind) ? null : await services.experimentPackages.methodFactState(ctx.projectId);
+      const revisionResearchIdea = (await services.projects.getRequired(ctx.projectId)).researchIdea;
+      const revisionMetricKeys = [...new Set((revisionExperimentContext?.comparisons ?? []).map((comparison) => comparison.metric))];
+      const methodFactFailures = (file: string, before: string, after: string): Array<{ code: "unsupported_claim"; detail: string }> =>
+        revisionMethodFactState === null ? [] : methodFactPatchViolations({
+          file, before, after, state: revisionMethodFactState, metricKeys: revisionMetricKeys,
+          ...(revisionResearchIdea !== undefined ? { researchIdea: revisionResearchIdea } : {}),
+        }).map((violation) => ({ code: "unsupported_claim" as const, detail: violation.detail }));
       // M14.3：thesis 修订纪律——写作阶段的【科研事实纪律】注入修订（M14.2 遗留
       // 缺口）：修订只改语言/结构，实验数值仍以 authorConfirmed 白名单为唯一来源，
       // 未裁决冲突不得被润色消除，继承表格守卫块不得被改动。
@@ -4309,6 +4360,9 @@ function revisionReviseStage(
                 });
               }
             }
+            // M17.2.1：作者方法事实守卫——本候选新引入的参数取值 / 标度冲突、已移除组件写成当前组件、无来源的新增参数取值
+            // → 候选级拒绝，进入同一有界修复通道（只拒绝新引入的问题；原稿既有问题由审稿继续报告）
+            failures.push(...methodFactFailures(target.relativePath, fileBefore, candidate));
             // M13 Final Closure（A2）：修订新引入、证据池 / 参考文献 / 修订前稿件都没有的具名文献 /
             // 作者 / 实体（Reviewer finding 文本经修订污染正文的确定性信号）→ 候选级拒绝 + 修复通道
             {
@@ -4509,6 +4563,8 @@ function revisionReviseStage(
           }
           const commentary = findWriterProcessCommentary(original, proposal);
           if (commentary !== null) out.push({ code: "revision_meta_text", detail: `REVISION_PROCESS_COMMENTARY_IN_MANUSCRIPT: ${commentary}` });
+          // M17.2.1：方法事实守卫（与 span 路径同一规则）
+          out.push(...methodFactFailures(candidateFile?.file ?? targetKey, original, proposal));
           if (candidateFile !== null) {
             const snapshotFiles = await readSnapshotTex(services.revisions.snapshotDir(ctx.projectId, currentRevision));
             if (snapshotFiles !== null && snapshotFiles.some((file) => file.file === candidateFile.file)) {
@@ -7880,11 +7936,22 @@ function outlinePlanStage(services: WorkflowServices): StageSpec {
       await services.manuscript.writeMainTex(ctx.projectId, outline, bibliography.length > 0);
       // 大纲骨架也是 manuscript 状态：提交修订（后续 gate/build 对齐基准）
       const revision = await services.revisions.commit(ctx.projectId, "outline.plan", ctx.runId);
+      // M17.2.1：大纲源头的方法事实核查（零模型；责任阶段 = outline）——冲突在 outline 确认 HITL 中可见，
+      // 写作阶段把冲突作为纠偏注入，正文不得照错误大纲扩写；审稿与修订再独立复检
+      const outlineMethodAudit = auditMethodFacts(outlineAuditTexts(outline), await services.experimentPackages.methodFactState(ctx.projectId), {
+        stage: "outline", ...(project.researchIdea !== undefined ? { researchIdea: project.researchIdea } : {}),
+        metricKeys: [...new Set((experimentContext.comparisons ?? []).map((comparison) => comparison.metric))],
+      });
+      await services.reviewArtifacts.saveMethodFactAudit(ctx.projectId, "outline", outlineMethodAudit);
+      if (outlineMethodAudit.findings.length > 0 || outlineMethodAudit.evaluated) {
+        ctx.log(`[outline] 方法事实核查（${outlineMethodAudit.factState}）：参数 ${outlineMethodAudit.checkedParameters}、组件提及 ${outlineMethodAudit.checkedComponentMentions}，finding ${outlineMethodAudit.findings.length}（${[...new Set(outlineMethodAudit.findings.map((finding) => finding.code))].join("、") || "无"}）`);
+      }
       return {
         sections: outline.sections.length,
         title: outline.title,
         references: bibliography.length,
         revision: revision.revision,
+        ...(outlineMethodAudit.findings.length > 0 ? { methodFactFindings: outlineMethodAudit.findings.length, methodFactConflicts: outlineMethodAudit.findings.filter((finding) => finding.severity === "major").length } : {}),
       };
     },
     async verifyDod(ctx) {
@@ -7908,6 +7975,14 @@ function outlinePlanStage(services: WorkflowServices): StageSpec {
   };
 }
 
+/** M17.2.1：大纲的可核查文本（摘要 + 每节标题与要点；文件名保留节名，相关工作节按「他人工作」语境判定） */
+function outlineAuditTexts(outline: { abstract?: string; sections: Array<{ file: string; title: string; keyPoints?: string[] }> }): AuditText[] {
+  return [
+    ...(outline.abstract !== undefined ? [{ file: "outline:abstract", content: outline.abstract }] : []),
+    ...outline.sections.map((section) => ({ file: `outline:${section.file}`, content: [section.title, ...(section.keyPoints ?? [])].join("。\n") })),
+  ];
+}
+
 /** outline 确认 HITL 的共享 payload（M11.1.3 refs 契约可见；idea / survey 共用） */
 async function outlineConfirmPayload(
   services: WorkflowServices,
@@ -7917,7 +7992,12 @@ async function outlineConfirmPayload(
   if (outline === null) {
     return undefined;
   }
+  // M17.2.1：大纲与作者方法事实的冲突 / 待裁决项随确认请求呈现（作者据此选择 revise 或继续）
+  const methodAudit = await services.reviewArtifacts.loadMethodFactAudit<MethodFactAuditResult>(ctx.projectId, "outline");
   return {
+    ...(methodAudit !== null && methodAudit.findings.length > 0
+      ? { methodFactFindings: methodAudit.findings.map((finding) => ({ code: finding.code, severity: finding.severity, authorDecisionRequired: finding.authorDecisionRequired, section: finding.file, quote: finding.quote.slice(0, 160), detail: finding.detail.slice(0, 240) })) }
+      : {}),
     title: outline.title,
     ...(outline.abstract !== undefined ? { abstract: outline.abstract.slice(0, 300) } : {}),
     sections: outline.sections.map((section) => ({
@@ -8343,6 +8423,12 @@ function writingSectionsStage(services: WorkflowServices): StageSpec {
       // M13.5.4：作者确认 + 授权的实验观测是实验数值的唯一来源（Writer 文件工具
       // 已被工作区隔离挡在实验原始材料之外）；空上下文也要显式注入（禁写数值）
       const experimentContext = await services.experimentPackages.workflowContext(ctx.projectId);
+      // M17.2.1：大纲阶段登记的方法事实冲突作为纠偏注入每一节写作（正文以作者事实为准，不照错误大纲扩写）
+      const outlineMethodAudit = await services.reviewArtifacts.loadMethodFactAudit<MethodFactAuditResult>(ctx.projectId, "outline");
+      if (experimentContext.methodFacts !== undefined && outlineMethodAudit !== null) {
+        const conflicts = outlineMethodAudit.findings.filter((finding) => finding.severity === "major").map((finding) => ({ quote: finding.quote, detail: finding.detail }));
+        if (conflicts.length > 0) experimentContext.methodFacts.outlineConflicts = conflicts.slice(0, 12);
+      }
 
       // M13.7.10：章节论证单元 + 逐节 Evidence 分配（B2 生产化）。关闭时回到
       // 旧组织（同一 formal 快照给每一节、「约 N 字」），prompt 与旧版逐字节一致。
@@ -8495,6 +8581,18 @@ function writingSectionsStage(services: WorkflowServices): StageSpec {
       await syncReferencesBib(services, ctx.projectId);
       // 初稿完成：提交首个内容修订
       const revision = await services.revisions.commit(ctx.projectId, "writing.sections", ctx.runId);
+      // M17.2.1：初稿方法事实核查（零模型；责任阶段 = writing）。不自动重写（不追加调用）：冲突由审稿登记为 fact major，
+      // 修订补丁不得引入新冲突；此处的账本区分「大纲带入」与「写作新增」
+      const writingProject = await services.projects.getRequired(ctx.projectId);
+      const writingMethodAudit = auditMethodFacts(
+        (await collectLatexFiles(services.projects.manuscriptDir(ctx.projectId))).allTex.map((file) => ({ file: file.relativePath, content: file.content })),
+        await services.experimentPackages.methodFactState(ctx.projectId),
+        { stage: "writing", ...(writingProject.researchIdea !== undefined ? { researchIdea: writingProject.researchIdea } : {}), metricKeys: [...new Set((experimentContext.comparisons ?? []).map((comparison) => comparison.metric))] },
+      );
+      await services.reviewArtifacts.saveMethodFactAudit(ctx.projectId, "writing", writingMethodAudit);
+      if (writingMethodAudit.findings.length > 0 || writingMethodAudit.evaluated) {
+        ctx.log(`[writing] 方法事实核查（${writingMethodAudit.factState}）：参数 ${writingMethodAudit.checkedParameters}、组件提及 ${writingMethodAudit.checkedComponentMentions}，finding ${writingMethodAudit.findings.length}（${[...new Set(writingMethodAudit.findings.map((finding) => finding.code))].join("、") || "无"}）`);
+      }
       const redundancy =
         units !== undefined
           ? await saveAcademicRedundancyReport(services, ctx, revision.revision, writtenLatex, units)
@@ -8520,6 +8618,9 @@ function writingSectionsStage(services: WorkflowServices): StageSpec {
           ? { experimentSnapshot: { snapshotId: experimentContext.snapshot.snapshotId, version: experimentContext.snapshot.version, contentHash: experimentContext.snapshot.contentHash, status: experimentContext.snapshot.status, comparisons: experimentContext.comparisons?.length ?? 0 } }
           : {}),
         ...(resultsTableDecision !== undefined ? { resultsTable: resultsTableDecision } : {}),
+        ...(writingMethodAudit.evaluated || writingMethodAudit.findings.length > 0
+          ? { methodFacts: { state: writingMethodAudit.factState, sheetId: writingMethodAudit.sheetId, findings: writingMethodAudit.findings.length, conflicts: writingMethodAudit.findings.filter((finding) => finding.severity === "major").length } }
+          : {}),
       };
     },
     async verifyDod(ctx) {

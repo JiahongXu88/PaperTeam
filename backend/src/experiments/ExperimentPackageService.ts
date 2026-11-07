@@ -25,6 +25,15 @@ import {
   type ClaimCheckPlan,
 } from "./claimChecks.js";
 import {
+  buildMethodFactSheet,
+  evaluateMethodFactState,
+  validateMethodFactInputs,
+  type MethodFact,
+  type MethodFactCandidate,
+  type MethodFactSheet,
+  type MethodFactState,
+} from "./methodFacts.js";
+import {
   SEMANTIC_LIMITS,
   UNDERSTANDING_SYSTEM_PROMPT,
   buildUnderstandingContext,
@@ -201,6 +210,22 @@ export interface WorkflowSnapshotRef {
   factCount: number;
   comparisonCount: number;
 }
+/**
+ * M17.2.1：作者确认的研究方法事实（参数取值 / 组件状态）的写作上下文——与实验快照可关联但不混同（方法参数不是实验指标）。
+ * 只有 status=valid 时 facts 才是权威；失效 / 撤销时 facts 为空并附原因；candidates 只是研究想法原文的确定性抽取，未经确认。
+ */
+export interface WorkflowMethodFacts {
+  status: MethodFactState["status"];
+  sheetId?: string;
+  version?: number;
+  contentHash?: string;
+  methodVersion?: string;
+  reasons?: string[];
+  facts: MethodFact[];
+  candidates: MethodFactCandidate[];
+  /** 写作阶段注入：大纲中与作者确认事实冲突的表述（正文以作者事实为准） */
+  outlineConflicts?: Array<{ quote: string; detail: string }>;
+}
 export interface ConfirmedExperimentWorkflowContext {
   schemaVersion: 1;
   status: "author_confirmed_not_externally_verified";
@@ -209,6 +234,8 @@ export interface ConfirmedExperimentWorkflowContext {
   snapshot?: WorkflowSnapshotRef;
   /** M17.2：快照中的确定性对比（≤ 60 条）；stale 快照为空 */
   comparisons?: WorkflowComparison[];
+  /** M17.2.1：作者方法事实（无事实表且研究想法无候选 = 缺省，行为与 M17.2 一致） */
+  methodFacts?: WorkflowMethodFacts;
   observations: Array<{
     packageId: string;
     packageHash: string;
@@ -1610,9 +1637,11 @@ export class ExperimentPackageService {
     const snapshotState = await this.activeSnapshotState(projectId);
     const candidates = await this.eligibleWorkflowCandidates(projectId, snapshotState);
     const selected = selectWorkflowObservations(candidates, options.anchorText !== undefined ? { anchorNumbers: manuscriptNumberAnchors(options.anchorText) } : {});
+    const methodFacts = workflowMethodFacts(await this.methodFactState(projectId));
     return {
       schemaVersion: 1,
       status: "author_confirmed_not_externally_verified",
+      ...(methodFacts !== undefined ? { methodFacts } : {}),
       ...(snapshotState !== null ? { snapshot: snapshotRef(snapshotState), comparisons: snapshotState.status === "valid" ? workflowComparisons(snapshotState.snapshot) : [] } : {}),
       // truncated 只反映总量限制（有合格观测因预算未被选中）；未确认/不合格
       // 观测不进入候选，也不计入截断判断
@@ -1889,6 +1918,76 @@ export class ExperimentPackageService {
     }
   }
 
+  // ---------------------------------------------------------------------------
+  // M17.2.1 作者确认的研究方法事实（参数 / 组件状态；版本化 + 撤销 + 来源变化失效）
+  // ---------------------------------------------------------------------------
+
+  private methodFactsDir(projectId: string): string { return join(this.root(projectId), "method-facts"); }
+
+  /** 当前方法事实状态（每次读盘，不缓存：撤销 / 研究想法修改立即生效）；文件损坏 = stale（fail closed，不回落为「无事实」） */
+  async methodFactState(projectId: string): Promise<MethodFactState> {
+    const project = await this.projects.getRequired(projectId);
+    let pointer: { sheetId: string; contentHash: string; revoked?: { at: string; reason: string } };
+    try {
+      pointer = JSON.parse(await readFile(join(this.methodFactsDir(projectId), "active.json"), "utf8")) as typeof pointer;
+    } catch (error) {
+      if ((error as { code?: string }).code === "ENOENT") return evaluateMethodFactState({ sheet: null, researchIdea: project.researchIdea });
+      const placeholder = buildMethodFactSheet({ sheetId: "mfs-unknown", version: 0, createdAt: "", facts: [], researchIdea: project.researchIdea });
+      return evaluateMethodFactState({ sheet: placeholder, researchIdea: project.researchIdea, loadError: "方法事实指针文件损坏" });
+    }
+    try {
+      const sheet = JSON.parse(await readFile(join(this.methodFactsDir(projectId), `${pointer.sheetId}.json`), "utf8")) as MethodFactSheet;
+      return evaluateMethodFactState({ sheet, pointerHash: pointer.contentHash, ...(pointer.revoked !== undefined ? { revoked: pointer.revoked } : {}), researchIdea: project.researchIdea });
+    } catch {
+      const placeholder = buildMethodFactSheet({ sheetId: pointer.sheetId, version: 0, createdAt: "", facts: [], researchIdea: project.researchIdea });
+      return evaluateMethodFactState({ sheet: placeholder, pointerHash: pointer.contentHash, researchIdea: project.researchIdea, loadError: "方法事实表文件不可用" });
+    }
+  }
+
+  async listMethodFactSheets(projectId: string): Promise<Array<{ sheetId: string; version: number; createdAt: string; contentHash: string; factCount: number }>> {
+    let names: string[];
+    try { names = await readdir(this.methodFactsDir(projectId)); } catch { return []; }
+    const out: Array<{ sheetId: string; version: number; createdAt: string; contentHash: string; factCount: number }> = [];
+    for (const name of names.filter((entry) => /^mfs-\d{4}\.json$/.test(entry)).sort()) {
+      try {
+        const sheet = JSON.parse(await readFile(join(this.methodFactsDir(projectId), name), "utf8")) as MethodFactSheet;
+        out.push({ sheetId: sheet.sheetId, version: sheet.version, createdAt: sheet.createdAt, contentHash: sheet.contentHash, factCount: sheet.facts.length });
+      } catch { /* 损坏版本不列出；当前状态由 methodFactState 报告 */ }
+    }
+    return out;
+  }
+
+  /** 作者确认方法事实：生成新版本（旧版本文件不变）并切换当前指针；这是唯一能产生权威方法事实的入口 */
+  async confirmMethodFacts(projectId: string, input: { facts: unknown; methodVersion?: string; note?: string }): Promise<MethodFactSheet> {
+    return this.enqueue(projectId, async () => {
+      const project = await this.projects.getRequired(projectId);
+      const { facts, problems } = validateMethodFactInputs(input.facts);
+      if (problems.length > 0) throw new BusinessError("INVALID_REQUEST", `方法事实不合法：${problems.slice(0, 8).join("；")}`);
+      const existing = await this.listMethodFactSheets(projectId);
+      const version = Math.max(0, ...existing.map((entry) => entry.version)) + 1;
+      const sheet = buildMethodFactSheet({
+        sheetId: `mfs-${String(version).padStart(4, "0")}`, version, createdAt: new Date().toISOString(), facts, researchIdea: project.researchIdea,
+        ...(input.methodVersion !== undefined ? { methodVersion: input.methodVersion } : {}), ...(input.note !== undefined ? { note: input.note } : {}),
+      });
+      await mkdir(this.methodFactsDir(projectId), { recursive: true });
+      await writeJsonAtomic(join(this.methodFactsDir(projectId), `${sheet.sheetId}.json`), sheet);
+      await writeJsonAtomic(join(this.methodFactsDir(projectId), "active.json"), { sheetId: sheet.sheetId, contentHash: sheet.contentHash });
+      return sheet;
+    });
+  }
+
+  /** 作者撤销当前方法事实：之后任何阶段都不再以其为权威（审稿报告失效，需重新确认） */
+  async revokeMethodFacts(projectId: string, reason: string): Promise<MethodFactState> {
+    await this.enqueue(projectId, async () => {
+      await this.projects.getRequired(projectId);
+      let pointer: { sheetId: string; contentHash: string };
+      try { pointer = JSON.parse(await readFile(join(this.methodFactsDir(projectId), "active.json"), "utf8")) as typeof pointer; }
+      catch { throw new NotFoundError("方法事实表", "active"); }
+      await writeJsonAtomic(join(this.methodFactsDir(projectId), "active.json"), { sheetId: pointer.sheetId, contentHash: pointer.contentHash, revoked: { at: new Date().toISOString(), reason: reason.slice(0, 300) } });
+    });
+    return this.methodFactState(projectId);
+  }
+
   /**
    * 当前快照 + 有效性：快照中每条事实必须仍在「已确认 + 已授权」范围内、源文件哈希不变、metadata / 单位 / 值不变；
    * 否则 stale（列出原因）。fail-closed：快照文件损坏 / 指针哈希不符同样 stale，不回落到实时数据。
@@ -1943,6 +2042,17 @@ function snapshotRef(state: ActiveSnapshotState): WorkflowSnapshotRef {
     snapshotId: state.snapshot.snapshotId, version: state.snapshot.version, contentHash: state.snapshot.contentHash, createdAt: state.snapshot.createdAt,
     status: state.status, ...(state.status === "stale" ? { staleReasons: state.staleReasons } : {}),
     factCount: state.snapshot.facts.length, comparisonCount: state.snapshot.comparisons.length,
+  };
+}
+
+function workflowMethodFacts(state: MethodFactState): WorkflowMethodFacts | undefined {
+  if (state.status === "none") return state.candidates.length > 0 ? { status: "none", facts: [], candidates: state.candidates } : undefined;
+  return {
+    status: state.status, sheetId: state.sheet.sheetId, version: state.sheet.version, contentHash: state.sheet.contentHash,
+    ...(state.sheet.methodVersion !== undefined ? { methodVersion: state.sheet.methodVersion } : {}),
+    ...(state.status !== "valid" ? { reasons: state.reasons } : {}),
+    facts: state.status === "valid" ? state.sheet.facts : [],
+    candidates: state.status === "valid" ? [] : state.candidates,
   };
 }
 

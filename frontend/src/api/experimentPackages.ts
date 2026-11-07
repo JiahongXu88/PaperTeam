@@ -242,3 +242,30 @@ export async function getActiveExperimentSnapshot(projectId: string): Promise<Ac
 export async function decideExperimentFacts(projectId: string, decision: { exclude?: string[]; include?: string[]; reason?: string }): Promise<{ excludedCount: number }> {
   return apiClient.post<{ excludedCount: number }>(`${base(projectId)}/fact-decisions`, decision);
 }
+
+// ---- M17.2.1 作者确认的研究方法事实 ----
+export type ComponentStatusView = "ACTIVE" | "REMOVED" | "PROPOSED" | "UNKNOWN";
+export interface MethodFactView {
+  factId: string; factKind: "parameter" | "component"; subject: string; aliases: string[];
+  value?: number; valueText?: string; unit?: string; status?: ComponentStatusView; scope: string[]; sourceLocator: string; confirmedAt: string;
+}
+export interface MethodFactCandidateView {
+  candidateId: string; factKind: "parameter" | "component"; subject: string; aliases: string[]; value?: number; valueText?: string; status?: ComponentStatusView; quote: string;
+}
+export interface MethodFactSheetView { sheetId: string; version: number; createdAt: string; contentHash: string; methodVersion?: string; facts: MethodFactView[] }
+export type MethodFactStateView =
+  | { status: "none"; candidates: MethodFactCandidateView[] }
+  | { status: "valid"; sheet: MethodFactSheetView; candidates: MethodFactCandidateView[] }
+  | { status: "stale" | "revoked"; sheet: MethodFactSheetView; reasons: string[]; candidates: MethodFactCandidateView[] };
+export interface MethodFactInputView {
+  factKind: "parameter" | "component"; subject: string; aliases?: string[]; valueText?: string; unit?: string; status?: ComponentStatusView; scope?: string[]; sourceLocator?: string;
+}
+export async function getMethodFacts(projectId: string): Promise<MethodFactStateView> {
+  return (await apiClient.get<{ state: MethodFactStateView }>(`${base(projectId)}/method-facts`)).state;
+}
+export async function confirmMethodFacts(projectId: string, input: { facts: MethodFactInputView[]; methodVersion?: string }): Promise<MethodFactStateView> {
+  return (await apiClient.put<{ state: MethodFactStateView }>(`${base(projectId)}/method-facts`, input)).state;
+}
+export async function revokeMethodFacts(projectId: string, reason: string): Promise<MethodFactStateView> {
+  return (await apiClient.post<{ state: MethodFactStateView }>(`${base(projectId)}/method-facts/revoke`, { reason })).state;
+}

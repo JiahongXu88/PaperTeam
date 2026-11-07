@@ -1437,6 +1437,36 @@ async function handleProjectResourceRoutes(
         : { active: { status: state.status, ...(state.status === "stale" ? { staleReasons: state.staleReasons } : {}), snapshot: boundedSnapshotBody(state.snapshot) } });
       return true;
     }
+    // ---- M17.2.1 作者确认的研究方法事实：当前状态 + 研究想法候选 / 确认新版本 / 撤销 ----
+    if (rest === "/method-facts") {
+      if (method === "GET") {
+        const state = await stack.experimentPackages.methodFactState(projectId);
+        sendJson(res, 200, { state, sheets: await stack.experimentPackages.listMethodFactSheets(projectId) });
+        return true;
+      }
+      if (method === "PUT") {
+        const body = await readJsonBody(req);
+        for (const name of ["methodVersion", "note"] as const) {
+          if (body[name] !== undefined && (typeof body[name] !== "string" || (body[name] as string).length > 300)) throw new BusinessError("INVALID_REQUEST", `${name} 必须是 ≤300 字的字符串`);
+        }
+        const sheet = await stack.experimentPackages.confirmMethodFacts(projectId, {
+          facts: body["facts"],
+          ...(typeof body["methodVersion"] === "string" ? { methodVersion: body["methodVersion"] } : {}),
+          ...(typeof body["note"] === "string" ? { note: body["note"] } : {}),
+        });
+        sendJson(res, 201, { sheet, state: await stack.experimentPackages.methodFactState(projectId) });
+        return true;
+      }
+      sendMethodNotAllowed(res, "GET, PUT", method); return true;
+    }
+    if (rest === "/method-facts/revoke") {
+      if (method !== "POST") { sendMethodNotAllowed(res, "POST", method); return true; }
+      const body = await readJsonBody(req);
+      const reason = body["reason"];
+      if (typeof reason !== "string" || reason.trim() === "") throw new BusinessError("INVALID_REQUEST", "撤销需要填写原因 reason");
+      sendJson(res, 200, { state: await stack.experimentPackages.revokeMethodFacts(projectId, reason.trim()) });
+      return true;
+    }
     const snapshotMatch = /^\/snapshots\/(efs-\d{4})$/.exec(rest);
     if (snapshotMatch) {
       if (method !== "GET") { sendMethodNotAllowed(res, "GET", method); return true; }

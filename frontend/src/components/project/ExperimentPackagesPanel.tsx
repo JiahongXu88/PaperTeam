@@ -28,6 +28,7 @@ import {
 import { formatApiError } from "../../utils/errors.js";
 import { bundleExperimentFiles, LOOSE_EXPERIMENT_EXTENSIONS } from "../../api/storeZip.js";
 import { ExperimentSnapshotSection, SNAPSHOT_QUERY_KEY } from "./ExperimentSnapshotSection.js";
+import { MethodFactsSection } from "./MethodFactsSection.js";
 
 /**
  * 实验数据工作台（M13.5 重构；M13.6 收敛用户操作成本）。
@@ -280,6 +281,7 @@ export function ExperimentPackagesPanel({ projectId }: { projectId: string }) {
         </>
       )}
 
+      <MethodFactsSection projectId={projectId} />
       {list.data !== undefined && list.data.length > 0 && <ExperimentSnapshotSection projectId={projectId} />}
 
       {currentId !== null &&

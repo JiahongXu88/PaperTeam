@@ -16,6 +16,7 @@ vi.mock("../src/api/experimentPackages.js", () => ({
   rebuildExperimentPackage: vi.fn(), ensureExperimentPackagesUpgraded: vi.fn(), applyExperimentWorkflowUse: vi.fn(),
   editExperimentFileMetadata: vi.fn(), getSnapshotPreview: vi.fn(), freezeExperimentSnapshot: vi.fn(),
   listExperimentSnapshots: vi.fn(), getActiveExperimentSnapshot: vi.fn(), decideExperimentFacts: vi.fn(),
+  getMethodFacts: vi.fn(), confirmMethodFacts: vi.fn(), revokeMethodFacts: vi.fn(),
 }));
 const api = await import("../src/api/experimentPackages.js");
 
@@ -58,6 +59,7 @@ beforeEach(() => {
   vi.mocked(api.getSnapshotPreview).mockResolvedValue(emptyPreview);
   vi.mocked(api.getActiveExperimentSnapshot).mockResolvedValue(null);
   vi.mocked(api.listExperimentSnapshots).mockResolvedValue([]);
+  vi.mocked(api.getMethodFacts).mockResolvedValue({ status: "none", candidates: [] });
   vi.mocked(api.applyExperimentWorkflowUse).mockResolvedValue({ ...packageView, groups: [{ ...packageView.groups[0]!, status: "confirmed", splitScopes: [{ ...packageView.groups[0]!.splitScopes![0]!, status: "confirmed", workflowUse: "allowed" }] }] });
 });
 
